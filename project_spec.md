@@ -146,7 +146,9 @@ makes parallel selection worth anything.
 
 ## The forum
 
-The shared knowledge channel, and the piece taken directly from AIRA³.
+The shared knowledge channel, and the piece taken directly from AIRA³. It is **shared
+cognition**; the task graph is shared execution state, and the two are kept apart — see
+*Planning: the board as a living plan*.
 
 Append-only and typed. An entry has `id, run_id, task_id, author, type, title, body,
 tags[], files[], created_at, superseded_by`. Types: `finding`, `convention`, `blocker`,
@@ -178,6 +180,10 @@ this the expensive way with its 48 KiB output clips and bounded meeting transcri
   could not run `rustc` became false the moment that was fixed, and carrying them forward
   would have misled every later agent.
 
+Informal in tone, but **typed in structure**. Leaving it conversational and unconstrained
+was considered and rejected on evidence: unbounded text poisons every prompt, which is why
+entries carry a kind, a byte budget, kind-ranking and retirement.
+
 Still open: nothing detects supersession, so two entries about different implementations of
 the same function can coexist — tolerable, since an agent can usually tell them apart — and
 retirement is manual. Curation as a scheduled job remains the eventual answer.
@@ -195,6 +201,83 @@ It is invoked on:
 
 Nothing else. Removing the manager from the inner loop is the single largest cost saving
 in v1.
+
+## Planning: the board as a living plan
+
+Two shared systems, and keeping them distinct matters:
+
+> **Forum = shared cognition. Blackboard = shared execution state.**
+
+The **forum** is what agents have learned — discoveries, warnings, constraints, dead ends,
+approaches worth reusing. The **blackboard** is the authoritative task graph and its state.
+One is informal in tone but typed in structure; the other is machine-readable and is the
+only thing the dispatcher acts on.
+
+We built both and missed the bridge between them. `create_run` is the only thing that
+writes tasks: afterwards `set_state` and `claim` change a task's *status*, but nothing can
+add, split, block, merge or supersede a node. **The graph is write-once.** So when an
+observer discovered the toolchain would not run, that knowledge could reach a later agent's
+prompt but could never change the plan. That bridge — *forum insight becomes a proposed
+graph mutation* — is the missing piece.
+
+### A mutable graph
+
+The graph gains typed mutations: `add`, `split`, `merge`, `block`, `cancel`, `supersede`,
+and dependency edits. Agents and the observer **propose**; the controller **decides**. A
+proposal carries a reason, and accepted mutations record who proposed them.
+
+**A mutation is a spend primitive.** An agent that can add tasks can commit the budget, in
+a project whose whole premise is controlling spend. So proposals are gated exactly like
+dispatch: a cap on tasks per run, cycle checks on every accepted edge, and the existing
+rolling allowances. Anything that would make the graph unsatisfiable is rejected outright.
+
+This is worth more than getting the initial plan right, because **a bad plan is cheap to
+discover and cheap to fix once the graph can change.** Execution surfaces plan defects for
+free: a wrong dependency appears as a blocked task, a missing task as a failing integration
+check. Investing in correctability beats investing in first-shot plan quality.
+
+### Decomposition
+
+One manager call at run start produces the graph; a human approves it before execution.
+`--tasks` remains the escape hatch, and is what the manager's output is written as.
+
+The graph is validated before it is accepted, and validation includes **running each
+proposed `verify` command**. A manager inventing a check that does not compile, or that
+passes vacuously, is worse than no check at all — and acceptance criteria are exactly where
+arithmetic and shell quoting go wrong.
+
+### Allocation from evidence, not self-report
+
+A bidding model in which agents declare `confidence: 0.87, capability: 0.92` was
+considered and rejected: those numbers are produced by the model about itself and are
+uncalibrated. The attempts ledger already holds better data — real durations, pass rates,
+retries and cost per provider. Route from that.
+
+### Deliberately deferred: ensemble decomposition
+
+Several agents independently proposing graphs, cross-examining each other, synthesising
+candidates and arbitrating between them is an appealing design, and may well be a strong
+problem solver. It is deferred, not rejected, for three reasons:
+
+- **It is the most expensive thing in the system.** Roughly `2N+2` model calls before any
+  code is written, against a first goal of doing more work for less money.
+- **There is no baseline.** A single manager decomposing has not been tried, so an
+  ensemble would be fixing an unmeasured problem.
+- **Plans have no objective score.** AIRA³'s ensemble works because candidate *solutions*
+  are ranked by a metric. Arbitrating between *plans* is a judgement call, so the extra
+  spend buys something we cannot verify was better.
+
+Revisit when measurement shows single-manager decomposition is the bottleneck. If it is
+built, note that **agreement between agents is weak evidence**: models share training data
+and see near-identical prompts, so independent proposal of the same node is correlated
+rather than corroborating.
+
+### Rejected: advisory coordination over files
+
+"Another agent is editing this file" as a forum message reintroduces advisory locking
+between models. Isolated worktrees and a serialised merge already solve it structurally: a
+collision either applies cleanly or conflicts loudly, and neither outcome depends on an
+agent remembering to announce itself.
 
 ## Roster and cost tiers
 
@@ -276,8 +359,9 @@ language.
    partition mode. See `v1_first_trials.md`.
 2. **Done.** The forum, with relevance slicing, a byte budget, cross-run carry-over and
    retirement.
-3. Tiered roster and routing are **done**; the event-triggered manager — which would end
-   hand-authored task graphs — is the next piece.
+3. Tiered roster and routing are **done**. Next: single-manager decomposition with
+   validated checks and human approval, then a mutable graph with typed proposals, then
+   the forum-to-graph bridge, then routing from the attempts ledger.
 4. Run archive keyed by `run_id`, plus JSONL export and the Lab surface.
 5. Pluggable scorers: human and agent.
 6. Compete mode.
