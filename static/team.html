@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Team · Firm</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&display=swap">
+<link rel="stylesheet" href="/style.css"></head>
+<body>
+<div class="crt-shell">
+
+  <aside class="gutter" aria-label="Telemetry">
+    <div class="wordmark">FIRM</div>
+    <div class="gutter-block">
+      <div class="meta">Capacity</div>
+      <div id="account-usage" aria-label="Provider account usage"><div class="last-line">loading…</div></div>
+    </div>
+    <div class="gutter-block">
+      <div class="meta">Window</div>
+      <div class="last-line" id="capacity-summary">loading…</div>
+    </div>
+    <div class="gutter-spacer"></div>
+    <div class="path" id="workspace-path">/home/len/dev/firm</div>
+  </aside>
+
+  <main class="work">
+    <div class="statusstrip">
+      <span class="mode" id="mode">Connecting</span>
+      <span class="strip-spacer"></span>
+      <nav class="crt-nav" aria-label="Main"><a href="/">workshop</a><a href="/team" aria-current="page">team</a><a href="/meetings">meetings</a></nav>
+    </div>
+
+    <div id="error" role="alert"></div>
+
+    <h1 class="hero">Team.</h1>
+    <p class="brief muted">One team, selected for different roles. Pause and wait for active work before switching a provider or editing capacity — nothing here starts agent work.</p>
+
+    <script src="/usage.js" defer></script>
+
+    <div class="sections team-main">
+      <section class="panel"><h2>Manager</h2><label for="manager-provider">Planning &amp; review provider</label><select id="manager-provider" disabled></select><p class="small muted">Pause and wait for active work before switching. Existing plans, evidence and counters are retained. Meetings keep their own speaking order.</p></section>
+      <section class="panel"><h2>Capacity for the project</h2><p class="small muted section-lead">These are Firm’s local project limits. Account usage is shown in the gutter.</p><div class="formgrid"><label>Manager turns<input id="a-manager_turns" type="number" min="0"></label><label>Worker runs<input id="a-worker_runs" type="number" min="0"></label><label>Window (seconds)<input id="a-window_seconds" type="number" min="1"></label><label>Manager interval (seconds)<input id="a-manager_interval_seconds" type="number" min="0"></label><label>Manager timeout (seconds)<input id="a-max_turn_seconds" type="number" min="1"></label><label>Worker timeout (seconds)<input id="a-worker_timeout_seconds" type="number" min="1"></label><label>Usage stop threshold (%)<input id="a-max_used_percent" type="number" min="1" max="100"></label><label>Usage freshness (seconds)<input id="a-usage_max_age_seconds" type="number" min="1"></label><label>Worker turns per run<input id="a-worker_max_turns" type="number" min="1"></label><label>Worker tool calls<input id="a-worker_max_tool_calls" type="number" min="1"></label><label>Provider cooldown (seconds)<input id="a-provider_cooldown_seconds" type="number" min="0"></label></div><button id="save-allowances">Save allowances</button><p class="small muted">Pause and wait for active work to finish before saving. Existing usage counters are retained.</p></section>
+      <section class="panel" id="providers-panel"><h2>Agents</h2><p class="small muted section-lead">The manager sees these role descriptions when choosing an agent. Edit them as the team’s strengths become clearer. Enable switches, descriptions and run caps persist across restarts and new projects.</p><div id="providers"></div><p class="small muted">Add CLI definitions in firm.toml and restart to expand the roster. All providers share the overall worker allowance.</p></section>
+    </div>
+
+    <p class="foot">Firm · one team, selected for different roles · no changes start agent work</p>
+  </main>
+</div>
+<script>
+const $=id=>document.getElementById(id);let snapshot=null,lastProviders='',lastManager='',allowancesLoaded=false;
+const text=(id,value)=>{$(id).textContent=value};
+function element(tag,content,cls){const e=document.createElement(tag);if(content!==undefined)e.textContent=content;if(cls)e.className=cls;return e}
+function error(message){$('error').style.display=message?'block':'none';text('error',message)}
+async function action(path,body={}){try{const response=await fetch('/api/'+path,{method:'POST',headers:{'Content-Type':'application/json','X-Firm-Control':'1'},body:JSON.stringify(body)});const data=await response.json();if(!response.ok)throw Error(data.error||'Request failed');error('');await refresh()}catch(e){error(e.message)}}
+$('manager-provider').onchange=()=>action('manager',{provider:$('manager-provider').value});
+$('save-allowances').onclick=()=>{const a={...snapshot.state.allowances};for(const key of Object.keys(a)){const input=$('a-'+key);if(!input.checkValidity()||!Number.isFinite(Number(input.value))){error('Check the project allowance values');return}a[key]=Number(input.value)}action('allowances',a)};
+function renderManager(data){const editable=data.state.paused&&!data.active&&!data.state.active_turn;const managers=data.providers.filter(p=>p.manager_configured).sort((a,b)=>(a.id==='grok'?0:1)-(b.id==='grok'?0:1));const key=JSON.stringify([managers,data.state.manager_provider,editable]);if(key===lastManager)return;lastManager=key;const select=$('manager-provider');select.replaceChildren();for(const manager of managers){const option=element('option',manager.name+(!manager.enabled?' (disabled)':''));option.value=manager.id;option.disabled=!manager.enabled;select.append(option)}if(!managers.some(p=>p.id===data.state.manager_provider)){const option=element('option',data.state.manager_provider+' (not configured)');option.value=data.state.manager_provider;option.disabled=true;select.append(option)}select.value=data.state.manager_provider;select.disabled=!editable}
+function renderProviders(data){const editable=data.state.paused&&!data.active&&!data.state.active_turn;const key=JSON.stringify([data.providers,editable]);if(key===lastProviders)return;if(editable&&$('providers').contains(document.activeElement))return;lastProviders=key;$('providers').replaceChildren();if(!data.providers.length)$('providers').append(element('p','No agents configured.','empty'));for(const provider of data.providers){const item=element('article',undefined,'task');item.dataset.provider=provider.id;const row=element('div',undefined,'row');row.append(element('strong',provider.name),element('span',provider.enabled?'Enabled':'Disabled','tag'));item.append(row);const roleLabel=element('label','Role, strengths and preferred work'),description=element('textarea');description.className='role-description';description.maxLength=4000;description.value=provider.description;description.disabled=!editable;roleLabel.append(description);item.append(roleLabel,element('p',provider.used_runs+' / '+provider.max_runs+' local runs · '+(provider.blocked_reason||'Available'),'small'));const details=element('details');details.append(element('summary','Command & prompt transport'),element('pre',provider.command+' '+JSON.stringify(provider.args)+'\nInput: '+provider.input));item.append(details);const settings=element('div',undefined,'provider-settings');const capLabel=element('label','Run cap for this provider'),cap=element('input');cap.type='number';cap.min='0';cap.value=provider.max_runs;cap.disabled=!editable;capLabel.append(cap);const controls=element('div',undefined,'controls'),toggle=element('button',provider.enabled?'Disable':'Enable'),save=element('button','Save agent');toggle.dataset.action='toggle';toggle.disabled=!editable;save.disabled=!editable;const payload=enabled=>({enabled,max_runs:Number(cap.value),description:description.value});toggle.onclick=()=>action('providers/'+encodeURIComponent(provider.id),payload(!provider.enabled));save.onclick=()=>{if(!cap.checkValidity()||!Number.isSafeInteger(Number(cap.value))){error('Run cap must be a non-negative whole number');return}action('providers/'+encodeURIComponent(provider.id),payload(provider.enabled))};controls.append(toggle,save);settings.append(capLabel,controls);item.append(settings);$('providers').append(item)}}
+function render(data){snapshot=data;const s=data.state,a=s.allowances,editable=s.paused&&!data.active&&!s.active_turn;text('mode',s.demo?'DEMO · no model calls':'LIVE · team settings');renderManager(data);renderProviders(data);$('save-allowances').disabled=!editable;const recent=values=>values.filter(t=>data.now-t<a.window_seconds).length;text('capacity-summary',recent(s.manager_starts)+'/'+a.manager_turns+' mgr · '+recent(s.worker_starts)+'/'+a.worker_runs+' wrk · '+a.window_seconds+'s');if(data.workspace&&$('workspace-path'))$('workspace-path').textContent=data.workspace;if(!allowancesLoaded){for(const [key,value] of Object.entries(a))$('a-'+key).value=value;allowancesLoaded=true}}
+async function refresh(){try{const response=await fetch('/api/state');if(!response.ok)throw Error('Dashboard connection failed');render(await response.json())}catch(e){text('mode','DISCONNECTED');error(e.message)}}refresh();setInterval(refresh,1500);
+</script></body></html>

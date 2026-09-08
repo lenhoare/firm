@@ -1,0 +1,68 @@
+/* Green CRT theme — Firm agent workshop
+   Drop in, then map your existing palette onto these variables. */
+
+:root {
+  /* surface */
+  --crt-bg:          #050a06;  /* page / panel background, everything sits on this */
+  --crt-rule:        rgba(125,255,160,.18); /* hairlines, panel dividers */
+  --crt-rule-strong: rgba(125,255,160,.50); /* border of the active/running row */
+  --crt-wash:        rgba(125,255,160,.06); /* fill of the active/running row */
+
+  /* ink — all on --crt-bg */
+  --crt-ink:         #7dffa0;  /* default text, body copy, prompt */
+  --crt-ink-bright:  #d9ffe6;  /* headings, key numerals, emphasised values */
+  --crt-ink-dim:     #58a870;  /* section labels, row indices, muted state words */
+  --crt-ink-faint:   #204a2c;  /* UNFILLED bar glyphs ONLY — never text */
+
+  /* type */
+  --crt-font: "Space Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --crt-size-hero:    26px;  /* line-height 1.35 */
+  --crt-size-body:    13px;  /* line-height 1.8  */
+  --crt-size-row:   12.5px;
+  --crt-size-meta:  10.5px;  /* line-height 1.5, letter-spacing .16em, uppercase */
+  --crt-size-micro:   10px;
+
+  /* rhythm */
+  --crt-gutter: 190px;       /* fixed left telemetry column */
+  --crt-pad-main: 26px 30px 30px;
+  --crt-pad-gutter: 20px 16px;
+}
+
+/* ---- CRT overlay -------------------------------------------------------
+   Attach to ONE element that spans the app shell (position:relative).
+   Both layers are pointer-events:none and must sit above content (z-index)
+   but below any modal layer. Do not animate them — a static scanline field
+   reads as a screen; a moving one reads as a novelty. */
+
+.crt-shell { position: relative; background: var(--crt-bg); }
+
+.crt-shell::before,
+.crt-shell::after { content:""; position:absolute; inset:0; pointer-events:none; z-index:2; }
+
+/* scanlines: 1px line every 3px */
+.crt-shell::before {
+  background: repeating-linear-gradient(180deg,
+    rgba(255,255,255,.045) 0 1px, transparent 1px 3px);
+}
+/* vignette: corners fall away, centre stays clean */
+.crt-shell::after {
+  background: radial-gradient(120% 90% at 50% 40%,
+    transparent 55%, rgba(0,0,0,.75) 100%);
+}
+.crt-shell > * { position: relative; z-index: 1; }
+
+/* ---- bar glyphs --------------------------------------------------------
+   Capacity is drawn as 12 half-block characters, not a div bar.
+   Filled = --crt-ink (value = bright), unfilled = --crt-ink-faint.
+   e.g. 66%  ->  8 filled, 4 faint. */
+.crt-bar        { letter-spacing: 0; }
+.crt-bar-filled { color: var(--crt-ink); }
+.crt-bar-empty  { color: var(--crt-ink-faint); }
+
+/* ---- caret ------------------------------------------------------------- */
+.crt-caret {
+  display:inline-block; width:8px; height:14px;
+  background: var(--crt-ink); vertical-align:-2px; margin-left:4px;
+  animation: crt-blink 1.05s steps(1) infinite;
+}
+@keyframes crt-blink { 0%,49%{opacity:1} 50%,100%{opacity:0} }

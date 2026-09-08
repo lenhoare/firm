@@ -1,0 +1,25 @@
+[package]
+name = "firm"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+axum = "0.8"
+futures-util = "0.3"
+libc = "0.2"
+rusqlite = { version = "0.31", features = ["bundled"] }
+regex = "1"
+sha2 = "0.10"
+tempfile = "3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = "0.28"
+toml = "0.9"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
+tower = { version = "0.5", features = ["util"] }

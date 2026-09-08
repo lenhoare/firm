@@ -1,0 +1,1 @@
+/home/len/dev/firm/examples/taskboard/target/debug/libfirm_taskboard.rlib: /home/len/dev/firm/examples/taskboard/src/analytics.rs /home/len/dev/firm/examples/taskboard/src/lib.rs /home/len/dev/firm/examples/taskboard/src/model.rs /home/len/dev/firm/examples/taskboard/src/parser.rs /home/len/dev/firm/examples/taskboard/src/report.rs

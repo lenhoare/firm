@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Firm · agent workshop</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&display=swap">
+<link rel="stylesheet" href="/style.css">
+<style>
+#snapshots-list{max-height:340px;overflow:auto;margin:15px 0}
+#snapshot-artifacts{max-height:240px;overflow:auto}
+#snapshot-panel button{overflow-wrap:anywhere;max-width:100%}
+#snapshot-recipe{font:12px/1.6 var(--crt-font)}
+#snapshot-inspector{border-top:1px solid var(--crt-rule);padding-top:18px}
+.q-entry details{margin-top:6px;padding-left:38px}
+</style>
+</head>
+<body>
+<div class="crt-shell">
+
+  <aside class="gutter" aria-label="Telemetry">
+    <div class="wordmark">FIRM</div>
+
+    <div class="gutter-block">
+      <div class="meta">Capacity</div>
+      <div id="account-usage" aria-label="Provider account usage"><div class="last-line">loading…</div></div>
+    </div>
+
+    <div class="gutter-block">
+      <div class="meta">Allowance</div>
+      <div class="allow-row">manager turns <span class="val" id="manager-count">—</span></div>
+      <div class="allow-row">worker runs <span class="val" id="worker-count">—</span></div>
+      <div class="allow-row">tasks <span class="val" id="accepted">—</span></div>
+    </div>
+
+    <div class="gutter-block">
+      <div class="meta">Last</div>
+      <div id="last-events"><div class="last-line">—</div></div>
+    </div>
+
+    <div class="gutter-spacer"></div>
+    <div class="path" id="workspace-path">/home/len/dev/firm</div>
+  </aside>
+
+  <main class="work">
+    <div class="statusstrip">
+      <span class="statechip" id="statechip"><span class="dot" id="dot"></span><strong id="stage">Connecting</strong></span>
+      <span class="status-reason" id="reason" aria-live="polite"></span>
+      <span class="mode" id="mode">Connecting</span>
+      <span class="strip-spacer"></span>
+      <nav class="crt-nav" aria-label="Main"><a href="/" aria-current="page">workshop</a><a href="/team">team</a><a href="/meetings">meetings</a></nav>
+    </div>
+
+    <div id="error" role="alert"></div>
+
+    <h1 class="hero" id="current-objective"></h1>
+    <p class="brief muted" id="demo-note"></p>
+
+    <div class="controls" style="margin-top:18px">
+      <button class="primary" id="start">Start background work</button>
+      <button id="pause">Take control / pause</button>
+      <button class="danger" id="stop">Stop work</button>
+    </div>
+
+    <div class="queue" id="tasks"><p class="empty">Your first assignment will appear here.</p></div>
+
+    <div class="prompt-line">&gt; <span class="cmd" id="connect">Available in live mode.</span><span class="crt-caret" aria-hidden="true"></span></div>
+    <p class="small muted" id="workspace" style="margin-top:10px"></p>
+    <button id="reconcile" hidden style="margin-top:4px">Check interrupted turn</button>
+
+    <div class="sections">
+
+      <section class="panel">
+        <h2>Experiment</h2>
+        <details id="objective-form" open>
+          <summary>Set an experiment</summary>
+          <label for="objective">A small, verifiable outcome</label>
+          <textarea id="objective" placeholder="What should the team accomplish?"></textarea>
+          <button id="save-objective">Save objective</button>
+        </details>
+      </section>
+
+      <section class="panel">
+        <h2>Plan</h2>
+        <ol id="phases"></ol>
+      </section>
+
+      <section class="panel">
+        <h2>Ideas &amp; review decisions</h2>
+        <div id="decisions"><p class="empty">Discoveries from every model belong in the conversation.</p></div>
+      </section>
+
+      <section class="panel">
+        <details id="history-panel">
+          <summary>Earlier experiments</summary>
+          <div id="history"><p class="empty">Open to load saved experiment snapshots.</p></div>
+        </details>
+      </section>
+
+      <section class="panel" id="snapshot-panel">
+        <h2>Snapshots &amp; recipes</h2>
+        <p class="small muted section-lead">Inputs and outcomes are saved automatically. Capture a baseline, keep a candidate recipe, or move a verified bundle between machines.</p>
+        <div class="controls"><button id="capture-snapshot">Capture baseline</button><button id="refresh-snapshots">Refresh list</button><button id="import-snapshot">Import bundle</button><input id="snapshot-file" type="file" accept="application/json,.json" hidden style="display:none"></div>
+        <div id="snapshots-list"><p class="empty">Loading snapshots…</p></div>
+        <div id="snapshot-inspector" hidden><h3 id="snapshot-title"></h3><p class="small muted" id="snapshot-coverage"></p><div class="controls"><a id="snapshot-export" class="pill" href="#">Export bundle</a></div><details><summary>Manifest</summary><pre id="snapshot-manifest"></pre></details><details><summary>Captured files &amp; context</summary><div id="snapshot-artifacts" class="controls"></div><pre id="snapshot-preview">Choose an artifact to inspect its captured contents.</pre></details><details><summary>Fork an editable recipe</summary><p class="small muted">Edit the configuration and instructions below. Saving creates an immutable candidate linked to this baseline; it does not activate the candidate or rerun work.</p><label for="snapshot-recipe">Candidate recipe JSON</label><textarea id="snapshot-recipe" rows="12" spellcheck="false"></textarea><button id="fork-snapshot">Save candidate</button></details><details><summary>Record an evaluation</summary><label for="snapshot-verdict">Assessment</label><select id="snapshot-verdict"><option value="inconclusive">Inconclusive / needs a trial</option><option value="better">Better</option><option value="worse">Worse</option></select><label for="snapshot-note">Evidence and reasoning</label><textarea id="snapshot-note" placeholder="What changed, what did we observe, and what should we try next?"></textarea><button id="evaluate-snapshot">Save evaluation</button></details></div>
+      </section>
+
+      <section class="panel">
+        <h2>Activity</h2>
+        <div class="timeline" id="events"></div>
+      </section>
+
+    </div>
+
+    <p class="foot">Firm · local experiment · demo and live histories are kept separately · no background work starts on launch</p>
+  </main>
+</div>
+
+<script src="/usage.js" defer></script>
+<script>
+const $=id=>document.getElementById(id);let snapshot=null,initialised=false,lastWork='',lastDecisions='',lastEvents='';
+let selectedSnapshot=null,lastSnapshotId=null;
+const compareDetails=document.createElement('details');compareDetails.innerHTML='<summary>Changes from parent snapshot</summary><pre id="snapshot-diff">Select a snapshot with a parent.</pre>';$('snapshot-inspector').append(compareDetails);compareDetails.ontoggle=async()=>{if(compareDetails.open&&selectedSnapshot){try{text('snapshot-diff',JSON.stringify(await snapshotRequest('/'+selectedSnapshot+'/diff'),null,2))}catch(e){text('snapshot-diff',e.message)}}};
+const text=(id,value)=>{$(id).textContent=value};
+function element(tag,content,cls){const e=document.createElement(tag);if(content!==undefined)e.textContent=content;if(cls)e.className=cls;return e}
+function error(message){$('error').style.display=message?'block':'none';text('error',message)}
+async function action(path,body={}){try{const r=await fetch('/api/'+path,{method:'POST',headers:{'Content-Type':'application/json','X-Firm-Control':'1'},body:JSON.stringify(body)});const data=await r.json();if(!r.ok)throw Error(data.error||'Request failed');error('');await refresh()}catch(e){error(e.message)}}
+$('start').onclick=()=>action('start');$('pause').onclick=()=>action('pause');$('stop').onclick=()=>action('stop');$('reconcile').onclick=()=>action('reconcile');
+$('save-objective').onclick=()=>action('objective',{objective:$('objective').value});
+async function snapshotRequest(path,body){const response=await fetch('/api/snapshots'+path,body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json','X-Firm-Control':'1'},body:JSON.stringify(body)});const data=await response.json();if(!response.ok)throw Error(data.error||'Snapshot request failed');return data}
+async function listSnapshots(){try{const rows=await snapshotRequest('');$('snapshots-list').replaceChildren();const records=rows.filter(r=>r.kind!=='recipe');if(!records.length)$('snapshots-list').append(element('p','No immutable snapshots yet. Capture a baseline or run a new experiment.','empty'));for(const row of records){const item=element('div',undefined,'task');const button=element('button',row.kind+' · '+row.label+' · '+row.id.slice(0,12));button.onclick=()=>inspectSnapshot(row.id);item.append(button);$('snapshots-list').append(item)}}catch(e){error(e.message)}}
+async function inspectSnapshot(id){try{const data=await snapshotRequest('/'+id);compareDetails.open=false;text('snapshot-preview','Choose an artifact to inspect its captured contents.');selectedSnapshot=id;$('snapshot-inspector').hidden=false;text('snapshot-title',data.manifest.kind+' · '+data.manifest.label);text('snapshot-manifest',JSON.stringify(data.manifest,null,2));text('snapshot-coverage',data.manifest.omissions.length+' coverage notes; '+Object.keys(data.manifest.artifacts).length+' captured artifacts. See the manifest for exclusions and unavailable context.');$('snapshot-export').href='/api/snapshots/'+id+'/export';$('snapshot-recipe').value=JSON.stringify(data.recipe_edit,null,2);$('fork-snapshot').disabled=!data.recipe_edit;$('snapshot-artifacts').replaceChildren();for(const name of Object.keys(data.manifest.artifacts)){const button=element('button',name);button.onclick=async()=>{try{const artifact=await snapshotRequest('/'+id+'/artifact?name='+encodeURIComponent(name));text('snapshot-preview',artifact.encoding+' · '+(artifact.artifact.redacted?'redacted · ':'')+(artifact.truncated?'preview truncated\n':'\n')+artifact.content)}catch(e){error(e.message)}};$('snapshot-artifacts').append(button)}error('')}catch(e){error(e.message)}}
+$('capture-snapshot').onclick=async()=>{try{const result=await snapshotRequest('',{label:'Baseline: '+(snapshot.state.objective||'current workspace').slice(0,200)});await listSnapshots();await inspectSnapshot(result.id);await refresh()}catch(e){error(e.message)}};
+$('refresh-snapshots').onclick=listSnapshots;
+$('import-snapshot').onclick=()=>$('snapshot-file').click();
+$('snapshot-file').onchange=async()=>{try{const file=$('snapshot-file').files[0];if(!file)return;if(file.size>64*1024*1024)throw Error('Bundle exceeds 64 MiB');const result=await snapshotRequest('/import',JSON.parse(await file.text()));await listSnapshots();await inspectSnapshot(result.id)}catch(e){error(e.message)}finally{$('snapshot-file').value=''}};
+$('fork-snapshot').onclick=async()=>{try{const result=await snapshotRequest('/'+selectedSnapshot+'/fork',JSON.parse($('snapshot-recipe').value));await listSnapshots();await inspectSnapshot(result.id)}catch(e){error(e.message)}};
+$('evaluate-snapshot').onclick=async()=>{try{const result=await snapshotRequest('/'+selectedSnapshot+'/evaluate',{note:$('snapshot-note').value,verdict:$('snapshot-verdict').value});$('snapshot-note').value='';await listSnapshots();await inspectSnapshot(result.id)}catch(e){error(e.message)}};
+$('history-panel').ontoggle=async()=>{if(!$('history-panel').open)return;try{const response=await fetch('/api/history');if(!response.ok)throw Error('Could not load history');const rows=await response.json();$('history').replaceChildren();if(!rows.length)$('history').append(element('p','Previous experiments appear here after you save a new objective.','empty'));for(const row of rows){const item=element('details');item.append(element('summary',new Date(row.time*1000).toLocaleString()+' · '+row.state.objective));item.append(element('p',row.state.stage+': '+row.state.reason,'muted'));for(const task of row.state.tasks){item.append(element('h3',task.assignment.title+' · '+task.status),element('pre',task.output||'No worker output'));}for(const d of row.state.decisions){item.append(element('p',d.summary));for(const o of d.observations)item.append(element('p',o,'discovery'));}$('history').append(item)}}catch(e){error(e.message)}};
+function queueClass(status){const s=(status||'').toLowerCase();if(s.includes('run'))return'running';if(/(fail|reject|error|cancel)/.test(s))return'failed';if(/(accept|done|complete|verified|pass)/.test(s))return'done';return'queued'}
+function render(data){snapshot=data;const s=data.state,a=s.allowances;
+$('capture-snapshot').disabled=!s.paused||data.active||!!s.active_turn;if(s.latest_snapshot!==lastSnapshotId){lastSnapshotId=s.latest_snapshot;listSnapshots()}
+text('mode',s.demo?'DEMO · no model calls':'LIVE · multi-provider workers');text('stage',s.stage.replaceAll('_',' ').toUpperCase());text('reason',s.reason);$('dot').className='dot'+(data.active?' running':'');
+$('statechip').className='statechip'+(data.active?' running':(/(fail|block|cancel)/.test(s.stage)?' failed':''));
+const recent=values=>values.filter(t=>data.now-t<a.window_seconds).length;text('manager-count',recent(s.manager_starts)+'/'+a.manager_turns);text('worker-count',recent(s.worker_starts)+'/'+a.worker_runs);text('accepted',s.tasks.filter(t=>t.status==='accepted').length+'/'+s.tasks.length);
+$('start').disabled=!s.paused||!['ready_plan','ready_worker','ready_review','planning','working','reviewing'].includes(s.stage);$('pause').disabled=s.paused;$('stop').disabled=['idle','complete','cancelled'].includes(s.stage)&&!data.active;
+$('save-objective').disabled=!s.paused||data.active||!!s.active_turn||!['idle','complete','blocked','cancelled'].includes(s.stage);
+text('current-objective',s.objective);text('demo-note',s.demo?'Demo simulates the whole cycle. Add [fail] to the objective to exercise a failed worker. Set the manager interval to 0 for a quick demo.':'Live work runs in the configured workspace. Start with a disposable project.');
+if(!initialised){initialised=true;if(s.objective)$('objective-form').open=false}
+const workKey=JSON.stringify([s.phases,s.tasks]);if(workKey!==lastWork){lastWork=workKey;$('phases').replaceChildren(...s.phases.map(p=>element('li',p)));$('tasks').replaceChildren();if(!s.tasks.length)$('tasks').append(element('p','Your first assignment will appear here.','empty'));s.tasks.forEach((task,i)=>{const entry=element('div',undefined,'q-entry');const row=element('div',undefined,'q-row '+queueClass(task.status));row.append(element('span',String(i+1).padStart(2,'0'),'q-index'),element('span',task.assignment.provider||'qwen','q-name'),element('span',task.assignment.title+(task.assignment.brief?' — '+task.assignment.brief:''),'q-desc'),element('span',task.status.replaceAll('_',' '),'q-state'));const details=element('details');details.append(element('summary','acceptance, autonomy & worker output'),element('p','Autonomy: '+task.assignment.autonomy,'small muted'));const list=element('ol');task.assignment.acceptance.forEach(c=>list.append(element('li',c)));details.append(list,element('pre',task.output||'Worker has not returned output yet.'));entry.append(row,details);$('tasks').append(entry)})}
+const decisionsKey=JSON.stringify(s.decisions);if(decisionsKey!==lastDecisions){lastDecisions=decisionsKey;$('decisions').replaceChildren();if(!s.decisions.length)$('decisions').append(element('p','Discoveries from every model belong in the conversation.','empty'));for(const d of [...s.decisions].reverse()){const item=element('div',undefined,'task');item.append(element('h3',(d.manager_provider||'codex')+' · manager'),element('p',d.summary));d.observations.forEach(o=>item.append(element('p',o,'discovery')));$('decisions').append(item)}}
+const eventsKey=JSON.stringify(s.events);if(eventsKey!==lastEvents){lastEvents=eventsKey;$('events').replaceChildren();for(const e of [...s.events].reverse()){const row=element('div',undefined,'event');row.append(element('time',new Date(e.time*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'})),element('p',e.message));$('events').append(row)}
+const teaser=[...s.events].reverse().slice(0,3).map(e=>element('div',new Date(e.time*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})+' '+e.message,'last-line'));$('last-events').replaceChildren(...(teaser.length?teaser:[element('div','—','last-line')]))}
+text('connect',s.demo?'Demo has no Codex conversation.':'codex --remote '+data.codex_url+(s.thread_id?' resume '+s.thread_id:''));text('workspace','Workspace: '+data.workspace);if($('workspace-path'))$('workspace-path').textContent=data.workspace;$('reconcile').hidden=s.demo||!s.active_turn;
+}
+async function refresh(){try{const response=await fetch('/api/state');if(!response.ok)throw Error('Dashboard connection failed');render(await response.json())}catch(e){text('mode','DISCONNECTED');error(e.message)}}refresh();listSnapshots();setInterval(refresh,1500);
+</script></body></html>

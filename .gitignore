@@ -1,0 +1,10 @@
+/target/
+/.firm/
+/firm.local.toml
+/examples/playground/target/
+node_modules/
+__pycache__/
+.env
+*.log
+dist/
+build/
