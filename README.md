@@ -79,7 +79,10 @@ breaks the integration is reverted.
   so focused work is never mislabelled by an unrelated failure elsewhere in the project.
 - An agent that changes no files is reported as such rather than treated as success.
 - At most five agents run at once (`MAX_CONCURRENT`), and each provider has its own
-  `max_concurrent`. Providers carry a `tier`: `0` is cheapest and is preferred.
+  `max_concurrent`. Providers carry a `tier`: `0` is cheapest. An unpinned task takes the
+  cheapest provider that has both allowance and a free slot, so work fills the cheap tier
+  and **spills to the next** rather than queueing behind a busy provider. A task may still
+  pin itself to one provider.
 - A task is retried once, then failed; anything depending on it is blocked, not stalled.
 - Each task may carry its own `verify` command. This matters: while other modules are
   still stubs the whole suite necessarily fails, so judging one task by it would reject

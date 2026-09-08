@@ -1,0 +1,77 @@
+{
+  "objective": "Implement four small independent utilities in the firm-parallel-trial crate. Each module is self-contained: it does not use, and must not modify, any other module.",
+  "tasks": [
+    {
+      "id": "slug",
+      "title": "Implement src/slug.rs",
+      "brief": "Implement slugify in src/slug.rs. Lowercase the input, keep ASCII alphanumerics, and replace every run of other characters with a single '-'. Remove leading and trailing separators. Change only src/slug.rs.",
+      "acceptance": [
+        "cargo test --offline --test slug passes",
+        "Only src/slug.rs is modified"
+      ],
+      "verify": [
+        "cargo",
+        "test",
+        "--offline",
+        "--test",
+        "slug"
+      ],
+      "depends_on": [],
+      "class": "implement"
+    },
+    {
+      "id": "roman",
+      "title": "Implement src/roman.rs",
+      "brief": "Implement to_roman in src/roman.rs. Return the roman numeral for 1..=3999 using standard subtractive notation (IV, IX, XL, XC, CD, CM). Return None outside that range. Change only src/roman.rs.",
+      "acceptance": [
+        "cargo test --offline --test roman passes",
+        "Only src/roman.rs is modified"
+      ],
+      "verify": [
+        "cargo",
+        "test",
+        "--offline",
+        "--test",
+        "roman"
+      ],
+      "depends_on": [],
+      "class": "implement"
+    },
+    {
+      "id": "wrap",
+      "title": "Implement src/wrap.rs",
+      "brief": "Implement wrap in src/wrap.rs. Greedy word wrap on spaces: never split a word, drop the spaces at line breaks, and give a word longer than the width its own unbroken line. Whitespace-only or empty input yields no lines. Change only src/wrap.rs.",
+      "acceptance": [
+        "cargo test --offline --test wrap passes",
+        "Only src/wrap.rs is modified"
+      ],
+      "verify": [
+        "cargo",
+        "test",
+        "--offline",
+        "--test",
+        "wrap"
+      ],
+      "depends_on": [],
+      "class": "implement"
+    },
+    {
+      "id": "columns",
+      "title": "Implement src/columns.rs",
+      "brief": "Implement align in src/columns.rs. Pad every column to its widest cell, join cells with a single space, and trim trailing whitespace from each line. Rows shorter than the widest row are padded with empty cells. Change only src/columns.rs.",
+      "acceptance": [
+        "cargo test --offline --test columns passes",
+        "Only src/columns.rs is modified"
+      ],
+      "verify": [
+        "cargo",
+        "test",
+        "--offline",
+        "--test",
+        "columns"
+      ],
+      "depends_on": [],
+      "class": "implement"
+    }
+  ]
+}

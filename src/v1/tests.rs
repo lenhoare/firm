@@ -76,6 +76,56 @@ fn scorer() -> Scorer {
 }
 
 #[tokio::test]
+async fn unpinned_work_fills_the_cheapest_tier_then_spills_to_the_next() {
+    let mut harness = harness().await;
+    // A cheap provider with one slot, and a dearer one with two.
+    harness.config.providers[0].max_concurrent = 1;
+    let mut dear = harness.config.providers[0].clone();
+    dear.id = "dear".into();
+    dear.name = "Dear".into();
+    dear.tier = 2;
+    dear.max_concurrent = 2;
+    harness.config.providers.push(dear);
+
+    // Three independent tasks, none pinned to a provider.
+    let spec = RunSpec {
+        objective: "Spread unpinned work across the roster".into(),
+        tasks: ["one", "two", "three"]
+            .iter()
+            .map(|id| {
+                let mut t = task(id, &format!("CREATE:{id}.txt"), &[]);
+                t.provider = None;
+                t
+            })
+            .collect(),
+    };
+    let board = Board::open(&harness.board_path).unwrap();
+    let (_tx, rx) = watch::channel(0);
+    let (engine, run_id) = Engine::create(harness.config.clone(), board, scorer(), rx, &spec)
+        .await
+        .unwrap();
+    let outcome = Arc::new(engine).drive(&run_id).await.unwrap();
+    assert_eq!(outcome.merged, 3);
+
+    let board = Board::open(&harness.board_path).unwrap();
+    let used: Vec<String> = board
+        .attempts(&run_id)
+        .unwrap()
+        .iter()
+        .map(|a| a["provider"].as_str().unwrap_or_default().to_string())
+        .collect();
+    assert_eq!(used.len(), 3);
+    assert!(
+        used.contains(&"fake".to_string()),
+        "the cheapest provider is used: {used:?}"
+    );
+    assert!(
+        used.contains(&"dear".to_string()),
+        "work spills to the next tier rather than queueing behind a busy provider: {used:?}"
+    );
+}
+
+#[tokio::test]
 async fn a_task_is_judged_by_its_own_check_not_by_unfinished_work_elsewhere() {
     // The run-level check demands every file, so it cannot pass until the last task is
     // done. This is the shape of a real project: a whole-suite check fails while other

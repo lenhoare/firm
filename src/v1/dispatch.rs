@@ -152,21 +152,33 @@ impl Engine {
             .with_context(|| format!("Provider {id} is not configured"))
     }
 
-    /// Choose a provider for a task. Milestone 1 honours an explicit pin and otherwise
-    /// takes the cheapest enabled provider; tier-aware routing arrives in milestone 3.
-    fn route(&self, pinned: Option<&str>) -> Result<Provider> {
+    /// Providers a task may use, cheapest first. An explicit pin yields just that one.
+    /// Otherwise every enabled provider is a candidate, ordered by tier and then by how
+    /// much spare capacity it has, so work fills the cheapest tier and spills to the next
+    /// rather than queueing behind a busy provider.
+    fn candidates(&self, pinned: Option<&str>) -> Result<Vec<Provider>> {
         if let Some(id) = pinned {
             let provider = self.provider(id)?;
             ensure!(provider.enabled, "Provider {id} is disabled");
-            return Ok(provider);
+            return Ok(vec![provider]);
         }
-        self.config
+        let mut providers: Vec<Provider> = self
+            .config
             .providers
             .iter()
             .filter(|p| p.enabled)
-            .min_by_key(|p| (p.tier, p.id.clone()))
             .cloned()
-            .context("No enabled provider")
+            .collect();
+        ensure!(!providers.is_empty(), "No enabled provider");
+        providers.sort_by_key(|p| {
+            let free = self
+                .provider_slots
+                .get(&p.id)
+                .map_or(0, |s| s.available_permits());
+            // Cheapest tier first; among equals, the one with the most spare capacity.
+            (p.tier, std::cmp::Reverse(free), p.id.clone())
+        });
+        Ok(providers)
     }
 
     /// Whether this provider may start another run right now. Counts are durable and span
@@ -222,8 +234,8 @@ impl Engine {
                 let Ok(global) = self.inflight.clone().try_acquire_owned() else {
                     break;
                 };
-                let provider = match self.route(task.provider.as_deref()) {
-                    Ok(provider) => provider,
+                let candidates = match self.candidates(task.provider.as_deref()) {
+                    Ok(candidates) => candidates,
                     Err(error) => {
                         let mut board = self.board.lock().await;
                         board.set_state(
@@ -235,14 +247,22 @@ impl Engine {
                         continue;
                     }
                 };
-                // Allowances are checked before anything external happens.
-                if let Some(reason) = self.budget_gate(&provider).await? {
-                    hold_reason = Some(reason);
-                    continue;
+                // Take the cheapest candidate that has both allowance and a free slot.
+                let mut chosen = None;
+                for candidate in candidates {
+                    // Allowances are checked before anything external happens.
+                    if let Some(reason) = self.budget_gate(&candidate).await? {
+                        hold_reason = Some(reason);
+                        continue;
+                    }
+                    let slots = self.provider_slots.get(&candidate.id).cloned();
+                    if let Some(Ok(slot)) = slots.map(|s| s.try_acquire_owned()) {
+                        chosen = Some((candidate, slot));
+                        break;
+                    }
                 }
-                let slots = self.provider_slots.get(&provider.id).cloned();
-                let Some(Ok(slot)) = slots.map(|s| s.try_acquire_owned()) else {
-                    continue; // This provider is busy; try the task on the next pass.
+                let Some((provider, slot)) = chosen else {
+                    continue; // Everything eligible is busy; try again on the next pass.
                 };
                 if !self.board.lock().await.claim(run_id, &task.id)? {
                     continue;
