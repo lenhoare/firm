@@ -119,6 +119,18 @@ Agents asked to self-report were rejected: it contradicts "change only this file
 file in a worktree would be the most conflict-prone thing in the repo, and unrewarded
 side-work is the first thing a cheap model drops.
 
+What an observer learned outlives its run. In a fully parallel run every agent starts
+before anything has been published, so a run-scoped forum is written and never read — an
+early trial published every entry between +31s and +80s while all four agents had
+dispatched at +0s. Observer entries therefore carry into later runs; controller
+bookkeeping ("task X done by Y") does not, being about one run only.
+
+Knowledge also goes stale: entries saying the sandbox could not run `rustc` became false
+the moment that was fixed, and carrying them forward would have misled every future agent.
+Retire an entry with `firm board --retire ID` (ids are shown by `--forum`) and it is never
+shown again. Automatic supersession is not yet implemented, so contradictory entries can
+coexist and are worth reviewing.
+
 A bounded, relevance-ordered slice is injected into each agent's prompt — dead ends first,
 never notes about its own task. Entries are untrusted agent text, so they are rendered
 attributed and quoted, framed explicitly as observations rather than instructions. Read

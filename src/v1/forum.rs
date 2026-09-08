@@ -109,7 +109,64 @@ impl<'a> Forum<'a> {
             "CREATE TABLE IF NOT EXISTS forum (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, task_id TEXT, author TEXT NOT NULL, kind TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL, created_at INTEGER NOT NULL);
             CREATE INDEX IF NOT EXISTS forum_run ON forum(run_id, created_at);",
         )?;
+        // Knowledge goes stale. An entry that was true of one environment can be false
+        // after a fix, so it must be possible to take it out of circulation.
+        let has_retired = conn
+            .prepare("PRAGMA table_info(forum)")?
+            .query_map([], |r| r.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<String>>>()?
+            .iter()
+            .any(|column| column == "retired");
+        if !has_retired {
+            conn.execute_batch("ALTER TABLE forum ADD COLUMN retired INTEGER NOT NULL DEFAULT 0")?;
+        }
         Ok(())
+    }
+
+    /// Take an entry out of circulation without deleting the record of it.
+    pub fn retire(&self, id: &str) -> Result<bool> {
+        let changed = self
+            .conn
+            .execute("UPDATE forum SET retired=1 WHERE id=?1", params![id])?;
+        Ok(changed == 1)
+    }
+
+    /// Observations from earlier runs that are still true. Controller entries are excluded
+    /// because they record what happened in one run rather than something learned, and
+    /// `outcome` is excluded for the same reason. Newest first, capped so an old forum
+    /// cannot crowd out the current run.
+    fn durable_from_earlier_runs(&self, run_id: &str) -> Result<Vec<Entry>> {
+        let mut query = self.conn.prepare(
+            "SELECT id,run_id,task_id,author,kind,title,body,created_at FROM forum
+             WHERE run_id<>?1 AND author<>'controller' AND kind<>'outcome' AND retired=0
+             ORDER BY created_at DESC LIMIT 40",
+        )?;
+        let rows = query.query_map([run_id], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<String>>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, String>(5)?,
+                r.get::<_, String>(6)?,
+                r.get::<_, u64>(7)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let row = row?;
+            Ok(Entry {
+                id: row.0,
+                run_id: row.1,
+                task_id: row.2,
+                author: row.3,
+                kind: Kind::parse(&row.4)?,
+                title: row.5,
+                body: row.6,
+                created_at: row.7,
+            })
+        })
+        .collect()
     }
 
     /// Publish one entry. Titles and bodies are clipped rather than rejected: a
@@ -136,7 +193,7 @@ impl<'a> Forum<'a> {
 
     pub fn entries(&self, run_id: &str) -> Result<Vec<Entry>> {
         let mut query = self.conn.prepare(
-            "SELECT id,run_id,task_id,author,kind,title,body,created_at FROM forum WHERE run_id=?1 ORDER BY created_at",
+            "SELECT id,run_id,task_id,author,kind,title,body,created_at FROM forum WHERE run_id=?1 AND retired=0 ORDER BY created_at",
         )?;
         let rows = query.query_map([run_id], |r| {
             Ok((
@@ -187,18 +244,36 @@ impl<'a> Forum<'a> {
             .into_iter()
             .filter(|e| include_own || e.task_id.as_deref() != Some(task_id))
             .collect();
+        // Knowledge that outlives its run. In a fully parallel run every agent starts
+        // before anything has been published, so a run-scoped forum is written and never
+        // read. What an observer learned about the environment — a toolchain that will not
+        // execute, an approach that cannot work — is true next week too, so it is carried
+        // forward. Controller bookkeeping ("task X done by Y") is not: it is about one run.
+        entries.extend(self.durable_from_earlier_runs(run_id)?);
         if entries.is_empty() {
             return Ok(String::new());
         }
-        entries.sort_by_key(|e| (e.kind.rank(), std::cmp::Reverse(e.created_at)));
+        // This run first — it is the most relevant — then by usefulness and recency.
+        entries.sort_by_key(|e| {
+            (
+                e.run_id != run_id,
+                e.kind.rank(),
+                std::cmp::Reverse(e.created_at),
+            )
+        });
 
         let mut out = String::new();
         for entry in entries {
             let rendered = format!(
-                "- [{}] {} (by {})\n  {}\n",
+                "- [{}] {} (by {}{})\n  {}\n",
                 entry.kind.as_str(),
                 entry.title,
                 entry.author,
+                if entry.run_id == run_id {
+                    ""
+                } else {
+                    ", earlier run"
+                },
                 entry.body.replace('\n', "\n  ")
             );
             if out.len() + rendered.len() > budget {
@@ -382,6 +457,34 @@ mod tests {
         // The budget is a hard cap.
         let tight = forum.slice_for("r", "z", 60, false).unwrap();
         assert!(tight.len() <= 60, "{} bytes", tight.len());
+    }
+
+    #[test]
+    fn what_was_learned_outlives_its_run_but_bookkeeping_does_not() {
+        // In a fully parallel run every agent starts before anything is published, so a
+        // run-scoped forum is written and never read. Durable knowledge must carry forward.
+        let conn = forum();
+        let forum = Forum::new(&conn);
+        forum.publish("old", Some("a"), "grok", Kind::DeadEnd, "rustc will not execute in the sandbox", "escalation is auto-denied").unwrap();
+        forum.publish("old", Some("a"), "grok", Kind::ApiFact, "width is byte length", "not graphemes").unwrap();
+        forum.publish("old", Some("a"), "controller", Kind::Outcome, "a done by muse", "fine").unwrap();
+        forum.publish("old", Some("b"), "controller", Kind::Blocker, "b not accepted from muse", "check failed").unwrap();
+
+        // A brand new run, at its very first dispatch, with nothing of its own yet.
+        let slice = forum.slice_for("new", "z", 8192, false).unwrap();
+        assert!(slice.contains("rustc will not execute"), "learning carries forward:\n{slice}");
+        assert!(slice.contains("width is byte length"), "{slice}");
+        assert!(slice.contains("earlier run"), "provenance is shown:\n{slice}");
+        assert!(!slice.contains("a done by muse"), "outcomes do not carry forward:\n{slice}");
+        assert!(!slice.contains("b not accepted"), "controller bookkeeping does not carry:\n{slice}");
+
+        // The current run still leads.
+        forum.publish("new", Some("c"), "grok", Kind::Finding, "current run note", "x").unwrap();
+        let slice = forum.slice_for("new", "z", 8192, false).unwrap();
+        assert!(
+            slice.find("current run note").unwrap() < slice.find("rustc will not execute").unwrap(),
+            "this run comes first:\n{slice}"
+        );
     }
 
     #[test]
