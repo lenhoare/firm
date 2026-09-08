@@ -133,7 +133,35 @@ This is also the clearest argument so far for the forum. The blocker was invisib
 diff, invisible to the controller — whose check passed every time — and only surfaced
 because an observer read what the agent actually said.
 
+## The retry path, verified on a real agent
+
+Every live attempt until now had passed first time, so retry was exercised only against a
+fake CLI. Forced with a check that can never pass (`sh -c 'exit 1'`), pinned to grok:
+
+```
+[    0s] → unsatisfiable dispatched to grok
+[   19s] ✗ unsatisfiable grok rejected in 20s · exit 0 · check failed · NOTES.md
+[   19s] → unsatisfiable dispatched to grok
+[ 1m50s] ✗ unsatisfiable grok rejected in 1m31s · exit 0 · check failed · NOTES.md
+[ 1m50s] ✗ unsatisfiable failed — 2 attempts exhausted
+```
+
+Reading back the prompts grok actually received, from its own session history:
+
+- The **first** attempt had no retry notice, and a forum slice carrying
+  `[dead_end] Do not change align's public signature... (by grok, earlier run)` — the first
+  time cross-run knowledge reached a live agent.
+- The **retry** had both: "A previous attempt at this task was rejected. Do not simply
+  repeat it. What happened: this check always fails", and the controller's blocker about
+  its own task, which `include_own` exists to unlock.
+
+The injection framing survived into both prompts intact.
+
+Separately, muse solved a *fair* ambiguity first time — a brief saying "the sum of its
+values" where the tests pin bytes rather than chars — by reading the tests instead of the
+brief. Checks matter more than prose.
+
 ## Not yet tested
 
-Merge conflicts between concurrent attempts on the same files; the retry path on a real
-agent; compete mode; the forum.
+Merge conflicts between concurrent attempts on the same files; compete mode; whether
+observer entries are ever read by an agent that would otherwise have gone wrong.

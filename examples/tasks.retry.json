@@ -1,0 +1,13 @@
+{
+  "objective": "Implement the checksum utility in the firm-parallel-trial crate.",
+  "tasks": [
+    {
+      "id": "checksum",
+      "title": "Implement src/checksum.rs",
+      "brief": "Implement checksum in src/checksum.rs. It returns a checksum of the input: the sum of its values, reduced modulo 256. Change only src/checksum.rs.",
+      "acceptance": ["cargo test --offline --test checksum passes", "Only src/checksum.rs is modified"],
+      "verify": ["cargo", "test", "--offline", "--test", "checksum"],
+      "depends_on": [], "class": "implement", "provider": "muse"
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "objective": "Exercise the retry path deliberately: the check for this task can never pass.",
+  "tasks": [
+    {
+      "id": "unsatisfiable",
+      "title": "Create NOTES.md",
+      "brief": "Create a file NOTES.md in the workspace root containing the single word: ok. Change only NOTES.md.",
+      "acceptance": ["NOTES.md exists"],
+      "verify": ["sh", "-c", "echo 'this check always fails'; exit 1"],
+      "depends_on": [], "class": "implement", "provider": "grok"
+    }
+  ]
+}
