@@ -1,68 +1,28 @@
 # Firm
 
-An experimental Rust controller with one configurable provider roster and selectable roles. **Grok is the default manager**; Codex · Astra, Grok, Qwen and Muse can all be workers. It uses the existing Codex app-server and CLI logins. There is no second Codex integration, direct OpenAI API integration or API-key fallback.
+An experimental Rust controller that puts several CLI coding agents to work on one project,
+under budgets you set. The aim is to get more useful work done while spending as little as
+possible on expensive models, and to exploit the fact that several agents outperform one.
 
-## Try the demo
+There are two generations in this repository:
 
-```sh
-cargo run -- serve
-```
+- **`firm board` — the parallel board.** Agents work concurrently on a task graph, each in
+  its own git worktree, and only work that passes a controller-run check is merged. They
+  share what they learn through a forum. This is the active line of development.
+- **`firm serve` — the original dashboard.** A sequential prototype in which a manager
+  plans, one worker acts, and the manager reviews, one step at a time. Still present and
+  documented below; superseded as a coordination model.
 
-Open **http://127.0.0.1:7433**. Enter a small objective, save it, and press **Start background work**. The simulated plan → worker → review cycle takes about ten seconds and uses no model credits. Include `[fail]` in an objective to exercise worker failure.
+Grok is the default v0 manager; Codex · Astra, Grok, Qwen and Muse can all be workers. It
+uses the existing Codex app-server and CLI logins. There is no second Codex integration,
+direct OpenAI API integration or API-key fallback.
 
-The **Workshop** page concentrates on the objective, work, decisions and snapshots, with the activity log retained on its right. Its overview row includes the current Codex remote command beside manager turns, worker runs and accepted tasks. Use **Team** for manager selection, visible project allowances, and each agent's enable switch, run cap and editable role description. Role edits persist and are supplied to the manager on later turns. The shared account-usage strip remains at the top of Workshop, Team and Meetings.
+## The parallel board (`firm board`)
 
-Demo and live state are separate. Both start paused. New demo state uses a zero manager interval; live mode uses the configured five-minute interval. Adjust allowances in the dashboard while paused and idle. Changes persist in SQLite; `firm.toml` supplies defaults for a new database. New experiments retain rolling usage counters and archive the previous experiment.
-
-## Connect to real agents
-
-In another terminal, using the existing Codex subscription login:
-
-```sh
-codex app-server --listen ws://127.0.0.1:4500
-```
-
-Check connectivity, account type, usage windows, and the configured model without starting inference:
-
-```sh
-cargo run -- probe
-```
-
-Stop the demo server before starting the live dashboard on the same port:
-
-```sh
-cargo run -- serve --live
-```
-
-The default workspace is [examples/playground](examples/playground/README.md), a deliberately unfinished standalone Rust exercise with acceptance tests. Paste its suggested objective into the dashboard. Enable only workers whose CLI login/configuration you have already set up. Live mode calls Codex only after Start and only when usage readings and local allowances permit. The default 50% stop threshold intentionally leaves substantial headroom; current account usage may already exceed it.
-
-Once Firm creates the manager thread, the dashboard shows the exact command for attaching the existing Codex terminal. **Take control / pause**, wait for active manager work to finish, then chat in Codex. **Stop work** requests cancellation as well. Before resuming background work, finish the human turn. Human and controller input do not yet have an atomic ownership lock across clients.
-
-Use `--config PATH` for a different workspace, port, state directory, verification command, or model. Paths are relative to the config file. Only localhost connections are supported in this prototype.
-
-## v1: the parallel board (`firm board`)
-
-Everything above describes **v0**, the sequential prototype: one manager turn before every
-single unit of work. **v1** replaces that coordination model — see
-[project_spec.md](project_spec.md) for the design and its influences. Milestone 1 is
-implemented and runs independently of the v0 dashboard.
-
-```sh
-firm board --tasks examples/tasks.example.json --config firm.trial.toml   # run a task graph
-firm board --config firm.trial.toml                                       # report on the last run
-firm board --watch --config firm.trial.toml                               # follow a run live
-```
-
-The run reports progress as it happens — each dispatch, each attempt's outcome with its
-duration, exit code, verdict and changed files, and each merge — so a run is legible from
-the terminal that started it. `--watch` redraws a live view of the board every two seconds. It is strictly read-only —
-it takes no lock and creates nothing — so it is safe to run in a second terminal while a
-run is in flight, and Ctrl+C stops watching without stopping the run.
-
-`firm.trial.toml` is a ready-made first trial: Muse only, pointed at
-`workspaces/taskboard-trial` — a standalone repository (created by you, ignored by this
-one) holding the task-board exercise with its three modules stubbed and six acceptance
-tests failing.
+This is the active line of development, and where new work goes. See
+[project_spec.md](project_spec.md) for the design and its influences, and
+[v1_first_trials.md](v1_first_trials.md) for what live runs have established. It runs
+independently of the v0 dashboard described further down.
 
 Several agents work **in parallel** on a graph of tasks, each in its own **git worktree**,
 so they cannot collide. A task becomes ready only once its dependencies have merged. After
@@ -70,6 +30,34 @@ an agent finishes, the **controller** — never the agent — runs `verify_comma
 worktree as the scorer, and only work that passes is merged into the run's integration
 branch. Passing alone is not enough: the scorer runs again after merging, and work that
 breaks the integration is reverted.
+
+```sh
+firm board --tasks examples/tasks.parallel.json --config firm.parallel.toml  # run a task graph
+firm board --config firm.parallel.toml            # report on the last run
+firm board --watch --config firm.parallel.toml    # follow a run live, in another terminal
+firm board --forum --config firm.parallel.toml    # read what the agents have learned
+firm board --retire ID --config firm.parallel.toml # take a stale entry out of circulation
+```
+
+A run reports progress as it happens: each dispatch, each attempt's outcome with its
+duration, exit code, verdict and changed files, and each merge. So a run is legible from
+the terminal that started it, without a dashboard.
+
+`--watch` redraws the board every two seconds and additionally shows what each running
+agent is doing right now. It is strictly read-only — it takes no lock and creates nothing —
+so it is safe alongside a run in flight, and Ctrl+C stops watching, not the run.
+
+Two ready-made trials, both pointed at standalone repositories under `workspaces/` that you
+create and this repository ignores:
+
+- `firm.parallel.toml` — four genuinely independent utilities, Muse and Grok. This is the
+  one that exercises parallelism.
+- `firm.trial.toml` — the task-board exercise, three modules in a dependency chain, Muse
+  only. Sequential by construction; it tests the chain, not concurrency.
+
+Task graphs are authored as JSON: see `examples/tasks.parallel.json`. Each task has an id,
+a brief, acceptance criteria, optional `depends_on`, an optional `verify` command and an
+optional pinned `provider`.
 
 - The workspace must be a **clean git repository**. Your own branch is never modified; each
   run works on `firm/run-<id>` and each attempt on `firm/attempt-<id>`.
@@ -83,7 +71,9 @@ breaks the integration is reverted.
   cheapest provider that has both allowance and a free slot, so work fills the cheap tier
   and **spills to the next** rather than queueing behind a busy provider. A task may still
   pin itself to one provider.
-- A task is retried once, then failed; anything depending on it is blocked, not stalled.
+- A task is retried once, then failed; anything depending on it is blocked, not stalled. A
+  retry is told why the previous attempt was rejected, and is shown notes about its own
+  task — which a first attempt is not.
 - Each task may carry its own `verify` command. This matters: while other modules are
   still stubs the whole suite necessarily fails, so judging one task by it would reject
   perfectly good focused work — the exact problem the second v0 live trial reported. The
@@ -128,17 +118,62 @@ bookkeeping ("task X done by Y") does not, being about one run only.
 Knowledge also goes stale: entries saying the sandbox could not run `rustc` became false
 the moment that was fixed, and carrying them forward would have misled every future agent.
 Retire an entry with `firm board --retire ID` (ids are shown by `--forum`) and it is never
-shown again. Automatic supersession is not yet implemented, so contradictory entries can
-coexist and are worth reviewing.
+shown again. Automatic supersession is not implemented: two entries about different
+implementations of the same function can coexist, which an agent can usually tell apart.
+Retirement is for entries that are simply no longer true.
 
 A bounded, relevance-ordered slice is injected into each agent's prompt — dead ends first,
 never notes about its own task. Entries are untrusted agent text, so they are rendered
 attributed and quoted, framed explicitly as observations rather than instructions. Read
 them with `firm board --forum`.
 
-Tasks are authored as JSON for now. Automatic decomposition by the manager, the shared
-forum, tier-aware routing, pluggable human/agent scorers and compete mode are the following
-milestones.
+Not yet built: automatic decomposition by a manager (task graphs are hand-authored),
+pluggable human and agent scorers, and compete mode — several agents attempting the *same*
+task with the best scored attempt kept. `project_spec.md` has the design for each.
+
+## The original dashboard (`firm serve`)
+
+Everything from here down describes v0: the sequential prototype, kept for its dashboard,
+meetings and snapshot archive. Its coordination model — one manager turn before every unit
+of work — is what `firm board` replaces.
+
+## Try the demo
+
+```sh
+cargo run -- serve
+```
+
+Open **http://127.0.0.1:7433**. Enter a small objective, save it, and press **Start background work**. The simulated plan → worker → review cycle takes about ten seconds and uses no model credits. Include `[fail]` in an objective to exercise worker failure.
+
+The **Workshop** page concentrates on the objective, work, decisions and snapshots, with the activity log retained on its right. Its overview row includes the current Codex remote command beside manager turns, worker runs and accepted tasks. Use **Team** for manager selection, visible project allowances, and each agent's enable switch, run cap and editable role description. Role edits persist and are supplied to the manager on later turns. The shared account-usage strip remains at the top of Workshop, Team and Meetings.
+
+Demo and live state are separate. Both start paused. New demo state uses a zero manager interval; live mode uses the configured five-minute interval. Adjust allowances in the dashboard while paused and idle. Changes persist in SQLite; `firm.toml` supplies defaults for a new database. New experiments retain rolling usage counters and archive the previous experiment.
+
+## Connect to real agents
+
+In another terminal, using the existing Codex subscription login:
+
+```sh
+codex app-server --listen ws://127.0.0.1:4500
+```
+
+Check connectivity, account type, usage windows, and the configured model without starting inference:
+
+```sh
+cargo run -- probe
+```
+
+Stop the demo server before starting the live dashboard on the same port:
+
+```sh
+cargo run -- serve --live
+```
+
+The default workspace is [examples/playground](examples/playground/README.md), a deliberately unfinished standalone Rust exercise with acceptance tests. Paste its suggested objective into the dashboard. Enable only workers whose CLI login/configuration you have already set up. Live mode calls Codex only after Start and only when usage readings and local allowances permit. The default 50% stop threshold intentionally leaves substantial headroom; current account usage may already exceed it.
+
+Once Firm creates the manager thread, the dashboard shows the exact command for attaching the existing Codex terminal. **Take control / pause**, wait for active manager work to finish, then chat in Codex. **Stop work** requests cancellation as well. Before resuming background work, finish the human turn. Human and controller input do not yet have an atomic ownership lock across clients.
+
+Use `--config PATH` for a different workspace, port, state directory, verification command, or model. Paths are relative to the config file. Only localhost connections are supported in this prototype.
 
 ## What works, and what is still experimental
 
@@ -148,7 +183,7 @@ milestones.
 - Current tasks, decisions, discoveries, recent events, retained worker output, Codex usage readings, and archived experiment snapshots in the dashboard. Output is capped at 48 KiB per stream and current activity at 300 events. Archives preserve these bounded snapshots.
 - Restart always pauses. Uncertain dispatches become blocked and are never automatically retried. For an unconfirmed Codex turn, inspect it in Codex and use **Check interrupted turn** to confirm it is idle. Inspect worker processes and files after an abrupt machine/controller crash; normal shutdown kills worker process groups, but crash recovery does not claim to reattach or identify every surviving descendant.
 
-Workers run serially in the chosen workspace. There is no concurrent worker execution, automatic worktree isolation or merge step, PTY adapter, or automatic reconnection or repair retries. Start with a disposable project. The dashboard is for trusted local use and is not a remotely authenticated service.
+In v0 workers run serially in the chosen workspace: there is no concurrent execution, worktree isolation or merge step, no PTY adapter, and no automatic reconnection or repair retries. (`firm board` does run agents concurrently in isolated worktrees — see above.) Start with a disposable project. The dashboard is for trusted local use and is not a remotely authenticated service.
 
 The terminal attachment and real planning/worker/review cycle still need a small live acceptance trial. Protocol tests use a fake app-server; demo success is not evidence of model quality or savings.
 
