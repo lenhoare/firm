@@ -168,14 +168,24 @@ impl<'a> Forum<'a> {
 
     /// The slice of the forum shown to an agent starting work, under a hard byte budget.
     ///
-    /// An unbounded forum poisons every prompt, so this is a filter, not a dump: entries
-    /// from the agent's own task are dropped (it is about to do that work), the most
-    /// useful kinds lead, and newest wins within a kind.
-    pub fn slice_for(&self, run_id: &str, task_id: &str, budget: usize) -> Result<String> {
+    /// An unbounded forum poisons every prompt, so this is a filter, not a dump: the most
+    /// useful kinds lead and newest wins within a kind.
+    ///
+    /// `include_own` decides whether notes about this very task are shown. For a first
+    /// attempt they are noise — the agent is about to do that work. For a **retry** they
+    /// are the single most relevant thing in the forum, because they say why the previous
+    /// attempt was rejected.
+    pub fn slice_for(
+        &self,
+        run_id: &str,
+        task_id: &str,
+        budget: usize,
+        include_own: bool,
+    ) -> Result<String> {
         let mut entries: Vec<Entry> = self
             .entries(run_id)?
             .into_iter()
-            .filter(|e| e.task_id.as_deref() != Some(task_id))
+            .filter(|e| include_own || e.task_id.as_deref() != Some(task_id))
             .collect();
         if entries.is_empty() {
             return Ok(String::new());
@@ -355,18 +365,22 @@ mod tests {
         forum.publish("r", Some("b"), "grok", Kind::Finding, "a finding", "detail").unwrap();
         forum.publish("r", Some("c"), "grok", Kind::DeadEnd, "regex approach fails", "it backtracks").unwrap();
 
-        let slice = forum.slice_for("r", "z", 4096).unwrap();
+        let slice = forum.slice_for("r", "z", 4096, false).unwrap();
         let dead = slice.find("dead_end").unwrap();
         let finding = slice.find("finding").unwrap();
         assert!(dead < finding, "dead ends lead:\n{slice}");
         assert!(slice.contains("(by grok)"), "entries are attributed");
 
         // An agent is not shown notes about the task it is about to do.
-        let own = forum.slice_for("r", "c", 4096).unwrap();
+        let own = forum.slice_for("r", "c", 4096, false).unwrap();
         assert!(!own.contains("regex approach fails"), "{own}");
 
+        // A retry is shown notes about its own task: that is why it is retrying.
+        let retry = forum.slice_for("r", "c", 4096, true).unwrap();
+        assert!(retry.contains("regex approach fails"), "a retry sees its own failure:\n{retry}");
+
         // The budget is a hard cap.
-        let tight = forum.slice_for("r", "z", 60).unwrap();
+        let tight = forum.slice_for("r", "z", 60, false).unwrap();
         assert!(tight.len() <= 60, "{} bytes", tight.len());
     }
 

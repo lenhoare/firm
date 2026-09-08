@@ -141,7 +141,7 @@ async fn the_controller_publishes_outcomes_and_a_later_agent_is_shown_them() {
 
     // The second task, dispatched after the first merged, is shown the first's entry —
     // and is not shown notes about its own task.
-    let slice = board.forum().slice_for(&run_id, "second", 8192).unwrap();
+    let slice = board.forum().slice_for(&run_id, "second", 8192, false).unwrap();
     assert!(slice.contains("first"), "{slice}");
     assert!(!slice.contains("second"), "an agent is not shown notes about its own task");
 }

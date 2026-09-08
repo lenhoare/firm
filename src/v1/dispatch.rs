@@ -449,10 +449,22 @@ impl Engine {
     ) -> Result<()> {
         // Read the forum at dispatch time, so an agent sees everything published up to the
         // moment it starts — including entries from siblings that finished seconds ago.
+        // A retry is, by definition, an agent that hit a problem. Tell it what happened
+        // rather than handing it the same prompt and paying for the same mistake twice.
+        let retry = task.attempts > 0;
+        let previous = if retry && !task.note.trim().is_empty() {
+            format!(
+                "\n\nA previous attempt at this task was rejected. Do not simply repeat it.\n\
+                 What happened: {}\n",
+                clip(task.note.trim(), 1500)
+            )
+        } else {
+            String::new()
+        };
         let prompt = format!(
-            "{}{}",
+            "{}{previous}{}",
             self.prompt(task),
-            self.forum_slice(&record.run_id, &task.id).await
+            self.forum_slice(&record.run_id, &task.id, retry).await
         );
         // Providers differ enough that one global limit is crude, so a provider may set
         // its own. Anything it does not set falls back to the run's allowances.
@@ -704,11 +716,11 @@ impl Engine {
     /// Notes from agents who have already worked on this run, rendered as attributed,
     /// quoted data. They are untrusted text written by other agents, so the framing is
     /// explicit: information to consider, never instructions to follow.
-    async fn forum_slice(&self, run_id: &str, task_id: &str) -> String {
+    async fn forum_slice(&self, run_id: &str, task_id: &str, retry: bool) -> String {
         let board = self.board.lock().await;
         let slice = board
             .forum()
-            .slice_for(run_id, task_id, self.config.forum_bytes)
+            .slice_for(run_id, task_id, self.config.forum_bytes, retry)
             .unwrap_or_default();
         if slice.trim().is_empty() {
             return String::new();
