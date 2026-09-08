@@ -1,7 +1,9 @@
 # Firm v1 — design
 
-Status: design agreed, not implemented. Supersedes the v0 spec previously in this file.
-Date: 8 September 2026.
+Status: milestones 1 and 2 implemented and exercised on live agents; the rest is design.
+Supersedes the v0 spec previously in this file. Date: 8 September 2026.
+What live runs established, including the corrections they forced, is in
+`v1_first_trials.md`.
 
 v0 is the working prototype in this repository. It is treated as **ingredients**, not a
 base: it solved the hard, unglamorous problem of driving agent CLIs reliably. v1 keeps
@@ -123,6 +125,12 @@ The backbone. Everything — merge, retry, escalation, ranking in compete mode �
   score is optional in partition mode and required for compete mode.
 - v1 requires a scorer to be configured for a run.
 
+A check may be **scoped to one task** (`verify` on the task) rather than the whole run.
+This is load-bearing in partition mode: while other modules are still stubs a whole-suite
+check necessarily fails, so judging one task by it rejects perfectly good focused work —
+the failure `second_live_trial.md` identified. The run-level command then runs once at the
+end and is **reported, not enforced**.
+
 Three interchangeable implementations, behind one interface:
 
 - **Command scorer (default).** A configured command run in the attempt's worktree —
@@ -144,18 +152,35 @@ Append-only and typed. An entry has `id, run_id, task_id, author, type, title, b
 tags[], files[], created_at, superseded_by`. Types: `finding`, `convention`, `blocker`,
 `dead_end`, `api_fact`, `decision`.
 
-Every agent reads a slice before starting and is expected to write after finishing —
-especially dead ends, which are the entries that most reliably save another agent's run.
+Two sources, and **agents are not one of them**. Asking a worker to write entries was tried
+in design and rejected: it contradicts the "change only this file" instruction, a shared
+file in a worktree would be the most merge-conflict-prone thing in the repository, and
+unrewarded side-work is the first thing a cheap model drops.
+
+- The **controller** publishes from evidence it already holds — outcome, native exit,
+  check verdict, files changed, interruption. Costs nothing and cannot be skipped.
+- An **observer** provider reads each finished attempt's distilled event stream and writes
+  what only that agent knew: dead ends, constraints, environment facts. Configured by
+  `forum_observer`, invoked through a provider's `observer_args`, budget-gated, and never
+  on the critical path — the task reaches its state first.
 
 **The hard part is that an unbounded forum poisons every prompt.** v0 already learned
 this the expensive way with its 48 KiB output clips and bounded meeting transcripts. So:
 
-- Retrieval is a **relevance slice**, not the whole log: matched on the task's files and
-  tags, plus recent and high-value entries, under a hard byte budget.
-- Entries are deduplicated and superseded rather than accumulated.
-- Curation (merging duplicates, marking entries stale) is itself a cheap, scheduled job.
+- Retrieval is a **relevance slice**, not the whole log: most useful kinds first, newest
+  within a kind, under a hard byte budget.
+- A first attempt is not shown notes about its own task; a **retry** is, because they say
+  why it was rejected, and it is also told the rejection directly.
+- Observer entries **outlive their run**; controller bookkeeping does not. This is
+  load-bearing rather than an optimisation: in a fully parallel run every agent starts
+  before anything has been published, so a run-scoped forum is written and never read.
+- Entries can be **retired** when they stop being true. Two entries saying the sandbox
+  could not run `rustc` became false the moment that was fixed, and carrying them forward
+  would have misled every later agent.
 
-This is an open design problem and should be expected to need tuning, not solved once.
+Still open: nothing detects supersession, so two entries about different implementations of
+the same function can coexist — tolerable, since an agent can usually tell them apart — and
+retirement is manual. Curation as a scheduled job remains the eventual answer.
 
 ## The manager
 
@@ -180,9 +205,15 @@ per-role argument sets. v1 adds:
 - `max_concurrent` — per-provider parallelism.
 - optional class affinities, informing routing.
 
-**Routing policy:** prefer the lowest tier plausibly capable of the task class; escalate
-a tier only on repeated failure or on classes explicitly reserved for premium
-(decomposition, integration, final review). Each tier has its own budget per rolling
+**Routing policy:** an unpinned task takes the cheapest provider that has both allowance
+and a free slot, so work fills the cheap tier and **spills to the next** rather than
+queueing behind a busy provider. Escalate a tier on repeated failure or for classes
+reserved for premium (decomposition, integration, final review).
+
+Providers also carry their own `worker_timeout_seconds` and `idle_timeout_seconds`, and a
+separate `observer_args`. One global limit proved too crude: agents differ by an order of
+magnitude, and an observer given planning arguments behaves like an agent with tools and
+never replies. Each tier has its own budget per rolling
 window, so premium spend is capped by construction rather than by good intentions.
 
 **Claude** is a genuine roster member, added last, purely through configuration — a
@@ -241,14 +272,33 @@ language.
 
 ## Milestones
 
-1. Task board, pull dispatcher, worktree isolation, command scorer, one provider,
-   partition mode.
-2. The forum, with relevance slicing and a byte budget.
-3. Tiered roster, routing, and the event-triggered manager.
+1. **Done.** Task board, pull dispatcher, worktree isolation, command scorer,
+   partition mode. See `v1_first_trials.md`.
+2. **Done.** The forum, with relevance slicing, a byte budget, cross-run carry-over and
+   retirement.
+3. Tiered roster and routing are **done**; the event-triggered manager — which would end
+   hand-authored task graphs — is the next piece.
 4. Run archive keyed by `run_id`, plus JSONL export and the Lab surface.
 5. Pluggable scorers: human and agent.
 6. Compete mode.
 7. Claude added to the roster by configuration.
+
+## Learned from running it
+
+Recorded here because each contradicted an assumption in this document:
+
+- **Structured event streams, not a PTY.** Both shipped CLIs emit machine-readable event
+  streams (`--json`, `--output-format streaming-json`) carrying reasoning summaries, tool
+  calls and status. That is strictly better than scraping a rendered screen, and it does
+  not change agent behaviour by making a CLI believe it is interactive. A PTY is held in
+  reserve for a CLI that genuinely blocks on input we cannot answer another way.
+- **Agents finish without exiting.** Reading output incrementally gives live activity and
+  an idle timeout, so a quiet agent's work is committed and scored instead of holding a
+  slot for the full limit.
+- **The workspace must be its own repository root.** A workspace nested in a larger repo
+  would silently isolate the enclosing project and hand agents everything in it.
+- **Derived state accumulates.** Integration worktrees cost about 48 MiB per run;
+  `firm board --prune` removes them, and the branches retain all the work.
 
 ## Deferred
 

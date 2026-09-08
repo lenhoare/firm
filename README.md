@@ -37,6 +37,7 @@ firm board --config firm.parallel.toml            # report on the last run
 firm board --watch --config firm.parallel.toml    # follow a run live, in another terminal
 firm board --forum --config firm.parallel.toml    # read what the agents have learned
 firm board --retire ID --config firm.parallel.toml # take a stale entry out of circulation
+firm board --prune --config firm.parallel.toml    # reclaim finished runs' worktrees
 ```
 
 A run reports progress as it happens: each dispatch, each attempt's outcome with its
@@ -89,6 +90,9 @@ optional pinned `provider`.
   `worker_timeout_seconds` and `idle_timeout_seconds`, falling back to the run's
   allowances. Grok reliably finishes in well under a minute; muse ranges from 30s to
   several minutes and has hung outright, so one global limit was too crude for both.
+- Each run leaves a checked-out integration worktree, around 48 MiB for a small Rust
+  crate. `--prune` removes those of finished runs, keeping the most recent; every run's
+  work stays on its `firm/run-<id>` branch regardless.
 - Rolling allowances are enforced before anything external happens, and counted from a
   durable ledger that spans runs: `worker_runs` overall, `max_runs` per provider, plus a
   per-provider cooldown after a rate-limited response. When an allowance runs out the

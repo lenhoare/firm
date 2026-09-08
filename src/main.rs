@@ -18,7 +18,7 @@ async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() || args.iter().any(|a| a == "--help" || a == "-h") {
         println!(
-            "Firm 0.1 — experimental agent team\n\n  firm serve [--live] [--config PATH]\n  firm probe [--config PATH]\n  firm board --tasks PATH [--live] [--config PATH]\n  firm board [--watch | --forum | --retire ID] [--config PATH]\n\nBoard runs the v1 engine: several agents work in parallel on a task graph, each in its\nown git worktree; only work passing verify_command is merged. The workspace must be a\nclean git repository and your own branch is never modified.\n\nDefault: demo mode, localhost:7433, firm.toml.\nProbe reads Codex login type and rate limits; it never starts a model turn.\nLive mode uses your existing Codex subscription and configured worker CLI logins.\nStart app-server separately: codex app-server --listen ws://127.0.0.1:4500"
+            "Firm 0.1 — experimental agent team\n\n  firm serve [--live] [--config PATH]\n  firm probe [--config PATH]\n  firm board --tasks PATH [--live] [--config PATH]\n  firm board [--watch | --forum | --retire ID | --prune] [--config PATH]\n\nBoard runs the v1 engine: several agents work in parallel on a task graph, each in its\nown git worktree; only work passing verify_command is merged. The workspace must be a\nclean git repository and your own branch is never modified.\n\nDefault: demo mode, localhost:7433, firm.toml.\nProbe reads Codex login type and rate limits; it never starts a model turn.\nLive mode uses your existing Codex subscription and configured worker CLI logins.\nStart app-server separately: codex app-server --listen ws://127.0.0.1:4500"
         );
         return Ok(());
     }
@@ -28,6 +28,7 @@ async fn main() -> Result<()> {
     let mut watch = false;
     let mut forum = false;
     let mut retire: Option<&str> = None;
+    let mut prune = false;
     let mut index = 1;
     while index < args.len() {
         match args[index].as_str() {
@@ -42,6 +43,7 @@ async fn main() -> Result<()> {
             }
             "--watch" => watch = true,
             "--forum" => forum = true,
+            "--prune" => prune = true,
             "--retire" => {
                 index += 1;
                 retire = Some(args.get(index).context("Missing forum entry id")?);
@@ -52,7 +54,7 @@ async fn main() -> Result<()> {
     }
     let config = Config::read(Path::new(config_path))?;
     if args[0] == "board" {
-        return board(config, tasks_path, live, watch, forum, retire).await;
+        return board(config, tasks_path, live, watch, forum, retire, prune).await;
     }
     if args[0] == "probe" {
         let rpc = codex::Codex::connect(&config.codex_url)
@@ -192,8 +194,12 @@ async fn board(
     watch: bool,
     forum: bool,
     retire: Option<&str>,
+    prune: bool,
 ) -> Result<()> {
     let board_path = v1::dispatch::board_path(&config.state_dir, live);
+    if prune {
+        return prune_worktrees(&config, live).await;
+    }
     if let Some(id) = retire {
         // Knowledge goes stale: an entry true of one environment is false after a fix.
         let board = v1::board::Board::open(&board_path)?;
@@ -359,6 +365,69 @@ async fn board(
     }
     drop(lock);
     Ok(())
+}
+
+/// Remove the checked-out integration worktrees of finished runs.
+///
+/// Each is a full checkout plus whatever the scorer built, around 48 MiB for a small Rust
+/// crate, and they accumulate one per run. Nothing is lost: the run's branch retains every
+/// commit, and a worktree can be recreated with `git worktree add`. The most recent run is
+/// kept, since that is the one you are most likely to want to look at.
+async fn prune_worktrees(config: &Config, live: bool) -> Result<()> {
+    let root = config.state_dir.join("worktrees");
+    if !root.exists() {
+        println!("No worktrees to prune.");
+        return Ok(());
+    }
+    let board = v1::board::Board::open_readonly(&v1::dispatch::board_path(&config.state_dir, live));
+    let keep = match &board {
+        Ok(board) => board.latest_run().unwrap_or_default(),
+        Err(_) => None,
+    };
+    let keep_dir = keep.as_ref().map(|id| format!("run-{}", &id[..8]));
+
+    let mut removed = 0usize;
+    let mut freed = 0u64;
+    for entry in std::fs::read_dir(&root)? {
+        let path = entry?.path();
+        let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+        if !path.is_dir() || Some(&name) == keep_dir.as_ref() {
+            continue;
+        }
+        let size = directory_size(&path);
+        // Ask git to release it first so the repository's worktree list stays consistent.
+        let _ = v1::worktree::git(
+            &config.workspace,
+            &["worktree", "remove", "--force", &path.join("integration").to_string_lossy()],
+        )
+        .await;
+        if path.exists() {
+            std::fs::remove_dir_all(&path)?;
+        }
+        removed += 1;
+        freed += size;
+    }
+    let _ = v1::worktree::git(&config.workspace, &["worktree", "prune"]).await;
+    println!(
+        "Pruned {removed} worktree(s), {:.0} MiB freed.{}\nEvery run's work remains on its firm/run-<id> branch.",
+        freed as f64 / (1024.0 * 1024.0),
+        keep_dir.map_or(String::new(), |k| format!(" Kept the most recent, {k}."))
+    );
+    Ok(())
+}
+
+fn directory_size(path: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .map(|entry| match entry.metadata() {
+            Ok(meta) if meta.is_dir() => directory_size(&entry.path()),
+            Ok(meta) => meta.len(),
+            Err(_) => 0,
+        })
+        .sum()
 }
 
 /// Follow a run in progress. Strictly read-only: it takes no lock and creates nothing, so
