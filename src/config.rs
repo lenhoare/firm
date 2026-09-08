@@ -29,6 +29,10 @@ fn meeting_order() -> Vec<String> {
     ["grok", "muse", "qwen", "codex"].map(String::from).to_vec()
 }
 
+fn one() -> usize {
+    1
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -86,6 +90,13 @@ pub struct Provider {
     pub input: PromptInput,
     pub enabled: bool,
     pub max_runs: usize,
+    /// Cost band used by v1 routing: 0 cheap, 1 mid, 2 premium. Prefer the lowest tier
+    /// plausibly capable of a task class; escalate only on repeated failure.
+    #[serde(default)]
+    pub tier: u8,
+    /// How many attempts by this provider may run at once, under the global cap.
+    #[serde(default = "one")]
+    pub max_concurrent: usize,
     #[serde(default)]
     pub description: String,
     /// Separate discussion-only invocation; absent means not available for meetings.
@@ -128,6 +139,8 @@ fn legacy_providers() -> Vec<Provider> {
         input: PromptInput::Stdin,
         enabled: true,
         max_runs: 6,
+        tier: 0,
+        max_concurrent: one(),
         description: "General-purpose coding worker".into(),
         meeting_args: None,
         manager_args: None,
@@ -216,6 +229,11 @@ impl Config {
                     && provider.name.len() <= 128
                     && provider.description.len() <= 4000,
                 "Invalid provider name, command or description: {}",
+                provider.id
+            );
+            ensure!(
+                provider.max_concurrent >= 1 && provider.max_concurrent <= 16,
+                "Provider {} must allow 1-16 concurrent attempts",
                 provider.id
             );
             ensure!(

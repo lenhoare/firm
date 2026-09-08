@@ -1,0 +1,47 @@
+{
+  "objective": "Finish the dependency-free Rust task-board library. The public API in src/lib.rs and the acceptance tests in tests/taskboard.rs already define the required behaviour; implement the three stubbed modules.",
+  "tasks": [
+    {
+      "id": "parser",
+      "title": "Implement src/parser.rs",
+      "brief": "Implement parse_board in src/parser.rs. Each line is 'status | owner | minutes | title'; blank lines and lines starting with '#' are ignored. Status is exactly todo, doing or done; owner and title must be non-empty; minutes must be a positive u32. Collect every invalid line as a 1-indexed ParseIssue rather than stopping at the first. Change only src/parser.rs.",
+      "acceptance": [
+        "cargo test --offline --test taskboard parses_valid_rows_and_source_lines passes",
+        "cargo test --offline --test taskboard collects_all_parse_issues_in_line_order passes",
+        "Only src/parser.rs is modified"
+      ],
+      "verify": ["cargo", "test", "--offline", "--test", "taskboard", "parse"],
+      "depends_on": [],
+      "class": "implement",
+      "provider": "muse"
+    },
+    {
+      "id": "analytics",
+      "title": "Implement src/analytics.rs",
+      "brief": "Implement summarize and next_task in src/analytics.rs using the parsed tasks. summarize returns board totals plus per-owner totals in a BTreeMap so ordering is deterministic. next_task ignores done tasks and tie-breaks by minutes then source line. Change only src/analytics.rs.",
+      "acceptance": [
+        "cargo test --offline --test taskboard summarizes_and_selects_next_work passes",
+        "cargo test --offline --test taskboard next_task_tiebreaks_by_minutes_then_line_and_ignores_done passes",
+        "Only src/analytics.rs is modified"
+      ],
+      "verify": ["cargo", "test", "--offline", "--test", "taskboard", "next_task"],
+      "depends_on": ["parser"],
+      "class": "implement",
+      "provider": "muse"
+    },
+    {
+      "id": "report",
+      "title": "Implement src/report.rs",
+      "brief": "Implement render_report in src/report.rs on top of the board summary. Output must be byte-for-byte deterministic and stable across runs, including owner ordering. The exact expected format is pinned by the acceptance tests. Change only src/report.rs.",
+      "acceptance": [
+        "cargo test --offline --test taskboard report_is_exact_and_owner_order_is_stable passes",
+        "cargo test --offline --test taskboard empty_board_is_valid_and_has_a_report passes",
+        "Only src/report.rs is modified"
+      ],
+      "verify": ["cargo", "test", "--offline", "--test", "taskboard", "report"],
+      "depends_on": ["analytics"],
+      "class": "implement",
+      "provider": "muse"
+    }
+  ]
+}

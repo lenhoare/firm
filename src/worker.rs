@@ -65,6 +65,9 @@ pub struct Prepared {
     program: String,
     args: Vec<String>,
     prompt: String,
+    /// Directory the worker runs in. v0 always uses the configured workspace; v1 gives
+    /// each attempt its own git worktree so parallel workers cannot collide.
+    workspace: std::path::PathBuf,
     // Keep the private prompt file alive until the worker and its descendants exit.
     prompt_file: Option<tempfile::NamedTempFile>,
 }
@@ -74,7 +77,7 @@ impl Prepared {
         serde_json::json!({"demo":demo,"provider":self.provider,"program":self.program,"args":self.args,
             "stdin":if self.prompt_file.is_none() { Some(&self.prompt) } else { None },
             "prompt_file":self.prompt_file.as_ref().map(|f| serde_json::json!({"path":f.path(),"content":self.prompt,"temporary":true})),
-            "cwd":config.workspace,"verification":config.verify_command,
+            "cwd":self.workspace,"verification":config.verify_command,
             "controller_timeout_seconds":config.allowances.worker_timeout_seconds})
     }
 }
@@ -88,6 +91,18 @@ pub fn prepare(config: &Config, provider: &Provider, assignment: &Assignment) ->
 }
 
 pub fn prepare_prompt(config: &Config, provider: &Provider, prompt: String) -> Result<Prepared> {
+    prepare_prompt_in(config, provider, prompt, config.workspace.clone())
+}
+
+/// Same as `prepare_prompt`, but runs the worker in `workspace` — both as its working
+/// directory and as the `{workspace}` argument substitution, so a CLI told where to work
+/// by flag (Muse, Codex) agrees with its own cwd.
+pub fn prepare_prompt_in(
+    config: &Config,
+    provider: &Provider,
+    prompt: String,
+    workspace: std::path::PathBuf,
+) -> Result<Prepared> {
     use std::io::Write;
     anyhow::ensure!(
         provider.enabled,
@@ -122,7 +137,7 @@ pub fn prepare_prompt(config: &Config, provider: &Provider, prompt: String) -> R
                 &config.allowances.worker_timeout_seconds.to_string(),
             )
             .replace("{codex_model}", &config.codex_model)
-            .replace("{workspace}", &config.workspace.to_string_lossy())
+            .replace("{workspace}", &workspace.to_string_lossy())
             .replace("{prompt_file}", &file_path)
         })
         .collect();
@@ -131,6 +146,7 @@ pub fn prepare_prompt(config: &Config, provider: &Provider, prompt: String) -> R
         program: provider.command.clone(),
         args,
         prompt,
+        workspace,
         prompt_file,
     })
 }
@@ -144,7 +160,7 @@ pub async fn run(
     let mut command = Command::new(&prepared.program);
     command
         .args(&prepared.args)
-        .current_dir(&config.workspace)
+        .current_dir(&prepared.workspace)
         .stdin(if prepared.prompt_file.is_none() {
             Stdio::piped()
         } else {
@@ -195,32 +211,45 @@ pub async fn run(
     })
 }
 
-pub async fn verify(config: &Config, mut cancel: watch::Receiver<u64>) -> Result<WorkerResult> {
-    anyhow::ensure!(
-        !cancel.has_changed()?,
-        "Cancelled before verification spawn"
-    );
-    let (program, args) = config
-        .verify_command
-        .split_first()
-        .context("No verification command")?;
+pub async fn verify(config: &Config, cancel: watch::Receiver<u64>) -> Result<WorkerResult> {
+    let result = run_command_in(&config.verify_command, &config.workspace, 60, cancel).await?;
+    Ok(WorkerResult {
+        output: format!(
+            "Controller verification {:?}\nExit: {:?}\n{}",
+            config.verify_command, result.exit_code, result.output
+        ),
+        ..result
+    })
+}
+
+/// Run a controller-owned command in `cwd` with bounded output and process-group cleanup.
+/// Used for v0 verification and for the v1 command scorer, which must run inside an
+/// attempt's own worktree and is never executed by the agent itself.
+pub async fn run_command_in(
+    command: &[String],
+    cwd: &std::path::Path,
+    timeout_seconds: u64,
+    mut cancel: watch::Receiver<u64>,
+) -> Result<WorkerResult> {
+    anyhow::ensure!(!cancel.has_changed()?, "Cancelled before command spawn");
+    let (program, args) = command.split_first().context("Empty command")?;
     let mut child = Command::new(program)
         .args(args)
-        .current_dir(&config.workspace)
+        .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .process_group(0)
         .spawn()
-        .context("Verification could not start")?;
-    let group = ProcessGroup(child.id().context("Verification has no PID")?);
+        .with_context(|| format!("Could not start {program}"))?;
+    let group = ProcessGroup(child.id().context("Command has no PID")?);
     let stdout = tokio::spawn(read_bounded(child.stdout.take().unwrap()));
     let stderr = tokio::spawn(read_bounded(child.stderr.take().unwrap()));
     let outcome = tokio::select! {
         result = child.wait() => result.map_err(anyhow::Error::from),
-        _ = cancel.changed() => Err(anyhow::anyhow!("Verification cancelled")),
-        _ = tokio::time::sleep(Duration::from_secs(60)) => Err(anyhow::anyhow!("Verification timed out after 60s")),
+        _ = cancel.changed() => Err(anyhow::anyhow!("Command cancelled")),
+        _ = tokio::time::sleep(Duration::from_secs(timeout_seconds)) => Err(anyhow::anyhow!("Command timed out after {timeout_seconds}s")),
     };
     drop(group);
     if outcome.is_err() {
@@ -233,10 +262,7 @@ pub async fn verify(config: &Config, mut cancel: watch::Receiver<u64>) -> Result
         Err(error) => (None, Some(error.to_string())),
     };
     Ok(WorkerResult {
-        output: format!(
-            "Controller verification {:?}\nExit: {exit_code:?}\n{out}\n{err}",
-            config.verify_command
-        ),
+        output: format!("{out}\n{err}"),
         exit_code,
         interruption,
     })

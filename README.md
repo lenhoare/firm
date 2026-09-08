@@ -40,6 +40,54 @@ Once Firm creates the manager thread, the dashboard shows the exact command for 
 
 Use `--config PATH` for a different workspace, port, state directory, verification command, or model. Paths are relative to the config file. Only localhost connections are supported in this prototype.
 
+## v1: the parallel board (`firm board`)
+
+Everything above describes **v0**, the sequential prototype: one manager turn before every
+single unit of work. **v1** replaces that coordination model — see
+[project_spec.md](project_spec.md) for the design and its influences. Milestone 1 is
+implemented and runs independently of the v0 dashboard.
+
+```sh
+firm board --tasks examples/tasks.example.json --config firm.trial.toml   # run a task graph
+firm board --config firm.trial.toml                                       # report on the last run
+```
+
+`firm.trial.toml` is a ready-made first trial: Muse only, pointed at
+`workspaces/taskboard-trial` — a standalone repository (created by you, ignored by this
+one) holding the task-board exercise with its three modules stubbed and six acceptance
+tests failing.
+
+Several agents work **in parallel** on a graph of tasks, each in its own **git worktree**,
+so they cannot collide. A task becomes ready only once its dependencies have merged. After
+an agent finishes, the **controller** — never the agent — runs `verify_command` inside that
+worktree as the scorer, and only work that passes is merged into the run's integration
+branch. Passing alone is not enough: the scorer runs again after merging, and work that
+breaks the integration is reverted.
+
+- The workspace must be a **clean git repository**. Your own branch is never modified; each
+  run works on `firm/run-<id>` and each attempt on `firm/attempt-<id>`.
+- Attempt branches are kept after the run as evidence of what each agent actually wrote,
+  including for rejected attempts. Their working directories are removed.
+- An agent's **native exit code** and the **controller's verdict** are recorded separately,
+  so focused work is never mislabelled by an unrelated failure elsewhere in the project.
+- An agent that changes no files is reported as such rather than treated as success.
+- At most five agents run at once (`MAX_CONCURRENT`), and each provider has its own
+  `max_concurrent`. Providers carry a `tier`: `0` is cheapest and is preferred.
+- A task is retried once, then failed; anything depending on it is blocked, not stalled.
+- Each task may carry its own `verify` command. This matters: while other modules are
+  still stubs the whole suite necessarily fails, so judging one task by it would reject
+  perfectly good focused work — the exact problem the second v0 live trial reported. The
+  run-level `verify_command` is then used once at the end, and reported rather than
+  enforced. The agent is told the exact command it will be judged by.
+- Rolling allowances are enforced before anything external happens, and counted from a
+  durable ledger that spans runs: `worker_runs` overall, `max_runs` per provider, plus a
+  per-provider cooldown after a rate-limited response. When an allowance runs out the
+  remaining tasks are **held** — left open for later, not failed.
+
+Tasks are authored as JSON for now. Automatic decomposition by the manager, the shared
+forum, tier-aware routing, pluggable human/agent scorers and compete mode are the following
+milestones.
+
 ## What works, and what is still experimental
 
 - Durable dispatch reservations, global and per-provider rolling allowances, manager spacing, usage freshness checks, independent provider cooldowns, bounded process output, and cancellation of worker process groups.

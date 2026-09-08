@@ -1,0 +1,346 @@
+//! End-to-end tests for the v1 engine, driven by a fake agent CLI so the whole
+//! board → worktree → agent → scorer → merge pipeline runs without model credits.
+
+use super::{
+    board::{Board, RunSpec, TaskSpec, TaskState},
+    dispatch::Engine,
+    scorer::Scorer,
+    worktree::{git, tests::repo},
+};
+use crate::config::{Config, PromptInput, Provider};
+use std::{os::unix::fs::PermissionsExt, path::Path, sync::Arc};
+use tokio::sync::watch;
+
+struct Harness {
+    _workspace: tempfile::TempDir,
+    _state: tempfile::TempDir,
+    workspace_path: std::path::PathBuf,
+    config: Config,
+    board_path: std::path::PathBuf,
+}
+
+async fn harness() -> Harness {
+    let workspace = repo().await;
+    let state = tempfile::tempdir().unwrap();
+    let script = state.path().join("fake-agent");
+    std::fs::write(&script, include_str!("../../tests/fixtures/v1-worker.sh")).unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+    let mut config = Config::read(Path::new("firm.toml")).unwrap();
+    config.workspace = workspace.path().to_path_buf();
+    config.state_dir = state.path().to_path_buf();
+    // Generous by default so only the tests that are about budgets are limited by them.
+    config.allowances.worker_runs = 50;
+    config.providers = vec![Provider {
+        id: "fake".into(),
+        name: "Fake".into(),
+        command: script.display().to_string(),
+        args: vec![],
+        input: PromptInput::Stdin,
+        enabled: true,
+        max_runs: 12,
+        tier: 0,
+        max_concurrent: 3,
+        description: "Test agent".into(),
+        meeting_args: None,
+        manager_args: None,
+    }];
+    Harness {
+        workspace_path: workspace.path().to_path_buf(),
+        board_path: state.path().join("board.db"),
+        config,
+        _workspace: workspace,
+        _state: state,
+    }
+}
+
+fn task(id: &str, brief: &str, depends_on: &[&str]) -> TaskSpec {
+    TaskSpec {
+        id: id.into(),
+        title: format!("Task {id}"),
+        brief: brief.into(),
+        acceptance: vec!["The controller check passes".into()],
+        depends_on: depends_on.iter().map(|s| (*s).into()).collect(),
+        class: "implement".into(),
+        provider: Some("fake".into()),
+        verify: None,
+    }
+}
+
+/// Passes unless a sentinel file is present, so a task can deliberately fail the check.
+fn scorer() -> Scorer {
+    Scorer::Command {
+        command: vec!["sh".into(), "-c".into(), "! test -f BROKEN".into()],
+        timeout_seconds: 30,
+    }
+}
+
+#[tokio::test]
+async fn a_task_is_judged_by_its_own_check_not_by_unfinished_work_elsewhere() {
+    // The run-level check demands every file, so it cannot pass until the last task is
+    // done. This is the shape of a real project: a whole-suite check fails while other
+    // modules are still stubs. Each task carries its own check so focused work is judged
+    // on its own terms — the exact failure the second v0 live trial reported.
+    let harness = harness().await;
+    let whole_suite = vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        "test -f one.txt && test -f two.txt".to_string(),
+    ];
+    let scoped = |file: &str| {
+        Some(vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            format!("test -f {file}"),
+        ])
+    };
+    let mut first = task("one", "CREATE:one.txt", &[]);
+    first.verify = scoped("one.txt");
+    let mut second = task("two", "CREATE:two.txt", &["one"]);
+    second.verify = scoped("two.txt");
+
+    let board = Board::open(&harness.board_path).unwrap();
+    let (_tx, rx) = watch::channel(0);
+    let scorer = Scorer::Command {
+        command: whole_suite,
+        timeout_seconds: 30,
+    };
+    let spec = RunSpec {
+        objective: "Judge each task on its own check".into(),
+        tasks: vec![first, second],
+    };
+    let (engine, run_id) = Engine::create(harness.config.clone(), board, scorer, rx, &spec)
+        .await
+        .unwrap();
+    let outcome = Arc::new(engine).drive(&run_id).await.unwrap();
+
+    assert_eq!(
+        outcome.merged, 2,
+        "both tasks merge even though the whole-suite check fails partway through"
+    );
+    // And the run still reports the honest whole-project result at the end.
+    let final_check = outcome.final_check.expect("a final check runs once work merged");
+    assert!(final_check.passed, "everything composes once both tasks are done");
+}
+
+#[tokio::test]
+async fn the_rolling_allowance_caps_agent_runs_and_holds_the_rest() {
+    let mut harness = harness().await;
+    // Three tasks are ready at once, but only two agent runs are allowed in the window.
+    harness.config.allowances.worker_runs = 2;
+    let spec = RunSpec {
+        objective: "Respect the budget".into(),
+        tasks: vec![
+            task("one", "CREATE:one.txt", &[]),
+            task("two", "CREATE:two.txt", &[]),
+            task("three", "CREATE:three.txt", &[]),
+        ],
+    };
+    let board = Board::open(&harness.board_path).unwrap();
+    let (_tx, rx) = watch::channel(0);
+    let (engine, run_id) = Engine::create(harness.config.clone(), board, scorer(), rx, &spec)
+        .await
+        .unwrap();
+    let outcome = Arc::new(engine).drive(&run_id).await.unwrap();
+
+    let board = Board::open(&harness.board_path).unwrap();
+    assert_eq!(
+        board.attempts(&run_id).unwrap().len(),
+        2,
+        "the allowance is a hard cap on agent runs, not a suggestion"
+    );
+    assert_eq!(outcome.merged, 2);
+    assert_eq!(outcome.held, 1, "the third task is held, not failed");
+    assert!(
+        outcome.hold_reason.unwrap().contains("allowance exhausted"),
+        "the run says which allowance stopped it"
+    );
+
+    // A held task stays open so it can be picked up once the window rolls.
+    let held: Vec<_> = board
+        .tasks(&run_id)
+        .unwrap()
+        .into_iter()
+        .filter(|t| !t.state.terminal())
+        .collect();
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[0].state, TaskState::Open);
+
+    // Counting spans runs: a brand new run gets no fresh allowance.
+    assert_eq!(board.recent_runs(None, 0).unwrap(), 2);
+}
+
+#[tokio::test]
+async fn a_per_provider_cap_is_enforced_independently_of_the_overall_allowance() {
+    let mut harness = harness().await;
+    harness.config.allowances.worker_runs = 10;
+    harness.config.providers[0].max_runs = 1;
+    let spec = RunSpec {
+        objective: "Respect the per-provider cap".into(),
+        tasks: vec![
+            task("one", "CREATE:one.txt", &[]),
+            task("two", "CREATE:two.txt", &[]),
+        ],
+    };
+    let board = Board::open(&harness.board_path).unwrap();
+    let (_tx, rx) = watch::channel(0);
+    let (engine, run_id) = Engine::create(harness.config.clone(), board, scorer(), rx, &spec)
+        .await
+        .unwrap();
+    let outcome = Arc::new(engine).drive(&run_id).await.unwrap();
+
+    assert_eq!(outcome.merged, 1);
+    assert_eq!(outcome.held, 1);
+    assert!(outcome.hold_reason.unwrap().contains("Fake run allowance exhausted"));
+}
+
+async fn drive(harness: &Harness, spec: RunSpec) -> (String, Board) {
+    let board = Board::open(&harness.board_path).unwrap();
+    let (_tx, rx) = watch::channel(0);
+    let (engine, run_id) = Engine::create(harness.config.clone(), board, scorer(), rx, &spec)
+        .await
+        .unwrap();
+    let engine = Arc::new(engine);
+    engine.drive(&run_id).await.unwrap();
+    (run_id, Board::open(&harness.board_path).unwrap())
+}
+
+#[tokio::test]
+async fn parallel_tasks_are_isolated_scored_and_merged_in_dependency_order() {
+    let harness = harness().await;
+    let spec = RunSpec {
+        objective: "Build three files".into(),
+        tasks: vec![
+            task("alpha", "Write the alpha file. CREATE:alpha.txt", &[]),
+            task("beta", "Write the beta file. CREATE:beta.txt", &[]),
+            // Depends on both, so it may only run once they have merged.
+            task("gamma", "Write the gamma file. CREATE:gamma.txt", &["alpha", "beta"]),
+        ],
+    };
+    let (run_id, board) = drive(&harness, spec).await;
+
+    let tasks = board.tasks(&run_id).unwrap();
+    for task in &tasks {
+        assert_eq!(task.state, TaskState::Merged, "{} — {}", task.id, task.note);
+    }
+
+    // All three files landed on the integration branch, and each attempt reported only
+    // the file it actually wrote.
+    let branch = board.run(&run_id).unwrap().integration_branch;
+    assert!(
+        branch.contains(&run_id[..8]),
+        "the integration branch must name its own run: {branch} vs {run_id}"
+    );
+    let listing = git(&harness.workspace_path, &["ls-tree", "-r", "--name-only", &branch])
+        .await
+        .unwrap();
+    for name in ["alpha.txt", "beta.txt", "gamma.txt"] {
+        assert!(listing.contains(name), "{name} missing from {listing}");
+    }
+
+    let attempts = board.attempts(&run_id).unwrap();
+    assert_eq!(attempts.len(), 3, "no task needed a retry");
+    for attempt in &attempts {
+        assert_eq!(attempt["state"], "verified");
+        assert_eq!(attempt["native_exit"], 0);
+        assert_eq!(attempt["passed"], true);
+        let changed = attempt["files_changed"].as_array().unwrap();
+        assert_eq!(changed.len(), 1, "attempts stay in their own lane: {changed:?}");
+    }
+
+    // The operator's own branch never moved.
+    assert_eq!(
+        git(&harness.workspace_path, &["rev-parse", "HEAD"]).await.unwrap(),
+        board.run(&run_id).unwrap().base_commit
+    );
+    assert!(
+        git(&harness.workspace_path, &["status", "--porcelain"]).await.unwrap().is_empty()
+    );
+}
+
+#[tokio::test]
+async fn a_failing_agent_is_retried_then_fails_the_task_and_blocks_dependents() {
+    let harness = harness().await;
+    let spec = RunSpec {
+        objective: "Handle failure honestly".into(),
+        tasks: vec![
+            task("good", "Write the good file. CREATE:good.txt", &[]),
+            task("bad", "This one cannot work. FAILNOW", &[]),
+            task("after-bad", "Never reached. CREATE:never.txt", &["bad"]),
+        ],
+    };
+    let (run_id, board) = drive(&harness, spec).await;
+
+    let state = |id: &str| {
+        board
+            .tasks(&run_id)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == id)
+            .unwrap()
+    };
+    assert_eq!(state("good").state, TaskState::Merged, "unrelated work still lands");
+    assert_eq!(state("bad").state, TaskState::Failed);
+    assert_eq!(
+        state("after-bad").state,
+        TaskState::Blocked,
+        "a dependent of a failed task is blocked, not left waiting forever"
+    );
+    assert_eq!(state("bad").attempts, super::dispatch::MAX_ATTEMPTS);
+
+    // The failing agent's non-zero exit is recorded as its own fact.
+    let attempts = board.attempts(&run_id).unwrap();
+    let failed: Vec<_> = attempts.iter().filter(|a| a["task_id"] == "bad").collect();
+    assert_eq!(failed.len(), super::dispatch::MAX_ATTEMPTS);
+    for attempt in failed {
+        assert_eq!(attempt["native_exit"], 1);
+    }
+
+    let branch = board.run(&run_id).unwrap().integration_branch;
+    let listing = git(&harness.workspace_path, &["ls-tree", "-r", "--name-only", &branch])
+        .await
+        .unwrap();
+    assert!(listing.contains("good.txt"));
+    assert!(!listing.contains("never.txt"));
+}
+
+#[tokio::test]
+async fn an_agent_that_writes_nothing_or_fails_the_check_is_not_merged() {
+    let harness = harness().await;
+    let spec = RunSpec {
+        objective: "Reject work that cannot be verified".into(),
+        tasks: vec![
+            // Announces nothing and writes nothing — v0's first live trial saw exactly this.
+            task("silent", "Think about it but change no files.", &[]),
+            // Writes the sentinel the scorer refuses.
+            task("breaks", "Break the check. CREATE:BROKEN", &[]),
+        ],
+    };
+    let (run_id, board) = drive(&harness, spec).await;
+
+    let tasks = board.tasks(&run_id).unwrap();
+    for task in &tasks {
+        assert_eq!(task.state, TaskState::Failed, "{}", task.id);
+    }
+
+    let attempts = board.attempts(&run_id).unwrap();
+    let silent: Vec<_> = attempts.iter().filter(|a| a["task_id"] == "silent").collect();
+    assert!(
+        silent[0]["detail"].as_str().unwrap().contains("changed no files"),
+        "a no-op agent is reported honestly, not treated as success"
+    );
+    assert_eq!(silent[0]["native_exit"], 0, "it exited cleanly while doing nothing");
+    assert_eq!(silent[0]["state"], "rejected");
+
+    let breaks: Vec<_> = attempts.iter().filter(|a| a["task_id"] == "breaks").collect();
+    assert_eq!(breaks[0]["state"], "rejected");
+    assert_eq!(breaks[0]["passed"], false);
+    assert_eq!(breaks[0]["native_exit"], 0, "the agent succeeded; the check did not");
+
+    // Nothing unverified reached the integration branch.
+    let branch = board.run(&run_id).unwrap().integration_branch;
+    let listing = git(&harness.workspace_path, &["ls-tree", "-r", "--name-only", &branch])
+        .await
+        .unwrap();
+    assert!(!listing.contains("BROKEN"), "{listing}");
+}
