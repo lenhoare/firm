@@ -53,7 +53,9 @@ firm board --config firm.trial.toml                                       # repo
 firm board --watch --config firm.trial.toml                               # follow a run live
 ```
 
-`--watch` redraws a live view of the board every two seconds. It is strictly read-only —
+The run reports progress as it happens — each dispatch, each attempt's outcome with its
+duration, exit code, verdict and changed files, and each merge — so a run is legible from
+the terminal that started it. `--watch` redraws a live view of the board every two seconds. It is strictly read-only —
 it takes no lock and creates nothing — so it is safe to run in a second terminal while a
 run is in flight, and Ctrl+C stops watching without stopping the run.
 

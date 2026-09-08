@@ -222,7 +222,60 @@ async fn board(config: Config, tasks_path: Option<&str>, live: bool, watch: bool
     let state_dir = config.state_dir.clone();
     let (engine, run_id) =
         v1::dispatch::Engine::create(config, board, scorer, cancel_rx, &spec).await?;
-    let engine = std::sync::Arc::new(engine);
+
+    // Report progress as it happens, so a run is legible without a second terminal.
+    let (progress, mut events) = tokio::sync::mpsc::unbounded_channel();
+    let engine = std::sync::Arc::new(engine.with_progress(progress));
+    let started = std::time::Instant::now();
+    let printer = tokio::spawn(async move {
+        while let Some(event) = events.recv().await {
+            let at = elapsed(started.elapsed().as_secs());
+            match event {
+                v1::dispatch::Progress::Dispatched { task, provider } => {
+                    println!("  [{at:>6}] → {task:<12} dispatched to {provider}");
+                }
+                v1::dispatch::Progress::Attempt {
+                    task,
+                    provider,
+                    state,
+                    seconds,
+                    native_exit,
+                    passed,
+                    files,
+                    detail,
+                } => {
+                    println!(
+                        "  [{at:>6}] {} {task:<12} {provider} {} in {} · exit {} · check {}{}",
+                        if state == v1::board::AttemptState::Verified { "✓" } else { "✗" },
+                        state.as_str(),
+                        elapsed(seconds),
+                        native_exit.map_or("–".to_string(), |c| c.to_string()),
+                        match passed {
+                            Some(true) => "passed",
+                            Some(false) => "failed",
+                            None => "not run",
+                        },
+                        if files.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" · {}", files.join(", "))
+                        }
+                    );
+                    if state != v1::board::AttemptState::Verified && !detail.trim().is_empty() {
+                        println!("            {}", detail.lines().next().unwrap_or_default());
+                    }
+                }
+                v1::dispatch::Progress::Task { task, state, note } => match state.as_str() {
+                    "merged" => println!("  [{at:>6}] ✓ {task:<12} merged into the integration branch"),
+                    "running" | "open" => {}
+                    other => println!(
+                        "  [{at:>6}] ✗ {task:<12} {other} — {}",
+                        note.lines().next().unwrap_or_default()
+                    ),
+                },
+            }
+        }
+    });
 
     tokio::spawn(async move {
         if tokio::signal::ctrl_c().await.is_ok() {
@@ -232,7 +285,7 @@ async fn board(config: Config, tasks_path: Option<&str>, live: bool, watch: bool
     });
 
     println!(
-        "Firm v1 {} — run {}\nObjective: {}\n{} tasks, up to {} agents at once. Workspace: {}\n",
+        "Firm v1 {} — run {}\nObjective: {}\n{} tasks, up to {} agents at once. Workspace: {}\nFollow along here, or in another terminal with: firm board --watch\n",
         if live { "LIVE" } else { "DEMO-SAFE (real CLIs, disposable workspace)" },
         &run_id[..8],
         spec.objective,
@@ -242,6 +295,9 @@ async fn board(config: Config, tasks_path: Option<&str>, live: bool, watch: bool
     );
 
     let outcome = engine.drive(&run_id).await?;
+    // Close the channel so the printer drains and stops before the summary.
+    drop(engine);
+    let _ = printer.await;
     let board = v1::board::Board::open(&v1::dispatch::board_path(&state_dir, live))?;
     summarise(&board, &run_id, &workspace)?;
     if let Some(check) = &outcome.final_check {

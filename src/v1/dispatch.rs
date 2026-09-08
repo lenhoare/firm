@@ -22,11 +22,37 @@ pub const MAX_CONCURRENT: usize = 5;
 /// How many times a task may be attempted before it is failed.
 pub const MAX_ATTEMPTS: usize = 2;
 
+/// What the engine reports as a run proceeds. Typed rather than pre-formatted text so the
+/// CLI and, later, the dashboard can render the same events differently.
+#[derive(Clone, Debug)]
+pub enum Progress {
+    Dispatched {
+        task: String,
+        provider: String,
+    },
+    Attempt {
+        task: String,
+        provider: String,
+        state: AttemptState,
+        seconds: u64,
+        native_exit: Option<i32>,
+        passed: Option<bool>,
+        files: Vec<String>,
+        detail: String,
+    },
+    Task {
+        task: String,
+        state: TaskState,
+        note: String,
+    },
+}
+
 pub struct Engine {
     config: Config,
     board: Arc<Mutex<Board>>,
     trees: Worktrees,
     scorer: Scorer,
+    progress: Option<tokio::sync::mpsc::UnboundedSender<Progress>>,
     cancel: watch::Receiver<u64>,
     /// Merges are serialised so two attempts never touch the integration branch at once.
     merge_lock: Mutex<()>,
@@ -97,9 +123,24 @@ impl Engine {
                 merge_lock: Mutex::new(()),
                 inflight: Arc::new(Semaphore::new(MAX_CONCURRENT)),
                 provider_slots,
+                progress: None,
             },
             run_id,
         ))
+    }
+
+    /// Report progress as the run proceeds. Without this the engine is silent.
+    #[must_use]
+    pub fn with_progress(mut self, sender: tokio::sync::mpsc::UnboundedSender<Progress>) -> Self {
+        self.progress = Some(sender);
+        self
+    }
+
+    fn emit(&self, progress: Progress) {
+        if let Some(sender) = &self.progress {
+            // A dropped receiver just means nobody is listening.
+            let _ = sender.send(progress);
+        }
     }
 
     fn provider(&self, id: &str) -> Result<Provider> {
@@ -220,6 +261,10 @@ impl Engine {
                     super::worktree::attempt_branch(&attempt_id),
                     from.clone(),
                 ))?;
+                self.emit(Progress::Dispatched {
+                    task: task.id.clone(),
+                    provider: provider.id.clone(),
+                });
 
                 let engine = Arc::clone(self);
                 let run = run_id.to_string();
@@ -318,6 +363,19 @@ impl Engine {
             record.detail = error.to_string();
         }
         self.board.lock().await.finish_attempt(&record)?;
+        self.emit(Progress::Attempt {
+            task: task.id.clone(),
+            provider: provider.id.clone(),
+            state: record.state,
+            seconds: record
+                .finished_at
+                .unwrap_or_else(now)
+                .saturating_sub(record.started_at),
+            native_exit: record.native_exit,
+            passed: record.passed,
+            files: record.files_changed.clone(),
+            detail: record.detail.clone(),
+        });
 
         // The worktree goes; the branch stays as evidence of what was actually written.
         let _ = self.trees.discard(&workspace).await;
@@ -330,8 +388,16 @@ impl Engine {
             ),
             _ => (TaskState::Open, record.detail.clone()),
         };
-        let mut board = self.board.lock().await;
-        board.set_state(run_id, &task.id, state, &clip(&note, 2000))?;
+        let note = clip(&note, 2000);
+        self.board
+            .lock()
+            .await
+            .set_state(run_id, &task.id, state, &note)?;
+        self.emit(Progress::Task {
+            task: task.id.clone(),
+            state,
+            note,
+        });
         outcome
     }
 
