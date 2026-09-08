@@ -25,6 +25,7 @@ async fn main() -> Result<()> {
     let mut config_path = "firm.toml";
     let mut tasks_path: Option<&str> = None;
     let mut live = false;
+    let mut watch = false;
     let mut index = 1;
     while index < args.len() {
         match args[index].as_str() {
@@ -37,13 +38,14 @@ async fn main() -> Result<()> {
                 index += 1;
                 tasks_path = Some(args.get(index).context("Missing tasks path")?);
             }
+            "--watch" => watch = true,
             other => bail!("Unknown argument: {other}"),
         }
         index += 1;
     }
     let config = Config::read(Path::new(config_path))?;
     if args[0] == "board" {
-        return board(config, tasks_path, live).await;
+        return board(config, tasks_path, live, watch).await;
     }
     if args[0] == "probe" {
         let rpc = codex::Codex::connect(&config.codex_url)
@@ -176,11 +178,14 @@ async fn main() -> Result<()> {
 /// Run one v1 board to completion. Several agents work in parallel on a task graph, each
 /// in an isolated git worktree; the controller scores every attempt and merges only what
 /// passes. There is no manager in this loop.
-async fn board(config: Config, tasks_path: Option<&str>, live: bool) -> Result<()> {
+async fn board(config: Config, tasks_path: Option<&str>, live: bool, watch: bool) -> Result<()> {
     let board_path = v1::dispatch::board_path(&config.state_dir, live);
+    if watch {
+        return watch_run(&board_path, &config.workspace).await;
+    }
     // With no task file, report on the most recent run instead of starting one.
     let Some(tasks_path) = tasks_path else {
-        let board = v1::board::Board::open(&board_path)?;
+        let board = v1::board::Board::open_readonly(&board_path)?;
         let run_id = board
             .latest_run()?
             .context("No runs yet. Start one with: firm board --tasks PATH")?;
@@ -250,6 +255,107 @@ async fn board(config: Config, tasks_path: Option<&str>, live: bool) -> Result<(
     }
     drop(lock);
     Ok(())
+}
+
+/// Follow a run in progress. Strictly read-only: it takes no lock and creates nothing, so
+/// it is safe to run alongside the controller that owns the board.
+async fn watch_run(board_path: &Path, workspace: &Path) -> Result<()> {
+    loop {
+        let board = v1::board::Board::open_readonly(board_path)?;
+        let Some(run_id) = board.latest_run()? else {
+            println!("No runs yet. Start one with: firm board --tasks PATH");
+            return Ok(());
+        };
+        let run = board.run(&run_id)?;
+        let tasks = board.tasks(&run_id)?;
+        let attempts = board.attempts(&run_id)?;
+        let finished = board.is_finished(&run_id)?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Redraw in place rather than scrolling.
+        print!("\x1b[2J\x1b[H");
+        println!(
+            "FIRM  run {}  {}  {}\n{}\n",
+            &run_id[..8],
+            if finished { "finished" } else { "running" },
+            elapsed(now.saturating_sub(run.created_at)),
+            run.objective.lines().next().unwrap_or_default()
+        );
+        for task in &tasks {
+            let mark = match task.state.as_str() {
+                "merged" => "✓",
+                "running" => "▶",
+                "failed" | "blocked" => "✗",
+                _ => "·",
+            };
+            println!("  {mark} {:<8} {:<12} {}", task.state.as_str(), task.id, task.title);
+            for attempt in attempts.iter().filter(|a| a["task_id"] == task.id) {
+                let started = attempt["started_at"].as_u64().unwrap_or(now);
+                let until = attempt["finished_at"].as_u64().unwrap_or(now);
+                let files = attempt["files_changed"]
+                    .as_array()
+                    .map(|f| {
+                        f.iter()
+                            .filter_map(|v| v.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    })
+                    .unwrap_or_default();
+                println!(
+                    "      {} {:<9} {:>6}  exit {}  check {}{}",
+                    attempt["provider"].as_str().unwrap_or("?"),
+                    attempt["state"].as_str().unwrap_or("?"),
+                    elapsed(until.saturating_sub(started)),
+                    attempt["native_exit"]
+                        .as_i64()
+                        .map_or("–".to_string(), |c| c.to_string()),
+                    match attempt["passed"].as_bool() {
+                        Some(true) => "passed",
+                        Some(false) => "failed",
+                        None => "pending",
+                    },
+                    if files.is_empty() {
+                        String::new()
+                    } else {
+                        format!("  [{files}]")
+                    }
+                );
+            }
+            if !task.note.trim().is_empty() && task.state.as_str() != "merged" {
+                println!("      {}", task.note.lines().next().unwrap_or_default());
+            }
+        }
+        let count = |state: &str| tasks.iter().filter(|t| t.state.as_str() == state).count();
+        println!(
+            "\n  merged {} · running {} · open {} · failed {} · blocked {}",
+            count("merged"),
+            count("running"),
+            count("open"),
+            count("failed"),
+            count("blocked")
+        );
+        if finished {
+            println!(
+                "\nReview the work: git -C {} log --oneline {}",
+                workspace.display(),
+                run.integration_branch
+            );
+            return Ok(());
+        }
+        println!("\n  watching — Ctrl+C to stop (the run keeps going)");
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
+}
+
+fn elapsed(seconds: u64) -> String {
+    if seconds < 60 {
+        format!("{seconds}s")
+    } else {
+        format!("{}m{:02}s", seconds / 60, seconds % 60)
+    }
 }
 
 /// Report a run's real outcome: each task's state, every attempt with its agent exit code

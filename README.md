@@ -50,7 +50,12 @@ implemented and runs independently of the v0 dashboard.
 ```sh
 firm board --tasks examples/tasks.example.json --config firm.trial.toml   # run a task graph
 firm board --config firm.trial.toml                                       # report on the last run
+firm board --watch --config firm.trial.toml                               # follow a run live
 ```
+
+`--watch` redraws a live view of the board every two seconds. It is strictly read-only —
+it takes no lock and creates nothing — so it is safe to run in a second terminal while a
+run is in flight, and Ctrl+C stops watching without stopping the run.
 
 `firm.trial.toml` is a ready-made first trial: Muse only, pointed at
 `workspaces/taskboard-trial` — a standalone repository (created by you, ignored by this

@@ -202,6 +202,28 @@ impl Board {
         Ok(Self { conn })
     }
 
+    /// Read-only handle for watching a run another process owns. Takes no lock and
+    /// creates nothing, so it cannot disturb a run in flight.
+    pub fn open_readonly(path: &Path) -> Result<Self> {
+        let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .with_context(|| format!("No board at {}", path.display()))?;
+        Ok(Self { conn })
+    }
+
+    /// Whether a run has finished, for watchers.
+    pub fn is_finished(&self, run_id: &str) -> Result<bool> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT finished_at FROM runs WHERE id=?1",
+                [run_id],
+                |r| r.get::<_, Option<u64>>(0),
+            )
+            .optional()?
+            .flatten()
+            .is_some())
+    }
+
     /// Validate the graph before anything is written: unknown dependencies and cycles are
     /// authoring errors, and a run that cannot finish should never start.
     /// The caller supplies the run id so that the integration branch, the worktree paths
