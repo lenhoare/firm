@@ -88,6 +88,51 @@ has both allowance and a free slot, filling tier 0 and spilling to tier 1.
    is enough data, tier should be informed by observed cost and reliability, not only by
    list price.
 
+## Agents could not compile, and it cost most of the wall clock
+
+The forum found this on its first useful run. Grok, observing a muse attempt, reported
+that `cargo` started but `rustc` failed with `Operation not permitted (os error 1)`, that
+"sandbox denies `rustc` execution", and that an escalation "with `require_escalated` was
+denied because approval prompts are disabled". One agent then spent minutes hand-linking
+with `cc` under `/tmp/wt`.
+
+Diagnosis, in order:
+
+1. Muse warned all along: "Bubblewrap was not found on PATH... the built-in Bubblewrap
+   will be used in the meantime." Installing `bwrap` was necessary but **not sufficient**.
+2. `muse exec` running `rustc --version` succeeded, which was a misleading test: only
+   `~/.cargo/bin/rustc` exists, a rustup shim, and that path is permitted.
+3. A real build failed on the toolchain binary itself:
+   `could not execute process /home/len/.rustup/toolchains/.../bin/rustc ... (never
+   executed) Caused by: Operation not permitted`.
+4. `bwrap --ro-bind / / -- .../bin/rustc --version` works, so bubblewrap is fine. Muse's
+   sandbox policy simply does not bind `~/.rustup`, and exposes no allow-list — `muse
+   sandbox` is Windows-only and `settings.json` has no sandbox keys.
+
+Fix: `--disable-sandbox` on muse's **worker** invocation only. The manager, meeting and
+observer invocations keep the sandbox, since they are read-only and never build. This is
+consistent with the existing posture — grok workers use `bypassPermissions`, qwen `yolo` —
+and the same caveat applies: worker authority is deliberately broad and is not an OS
+sandbox. The git worktree bounds the blast radius to a disposable branch; use a disposable
+workspace.
+
+Effect, same four tasks, same providers:
+
+| task | before | after |
+| --- | --- | --- |
+| wrap (muse) | 5m13s, then 3m01s | 31s |
+| slug (muse) | 5m02s, then 1m41s | 43s |
+| roman (muse) | 1m12s | 1m14s |
+| whole run | 1m42s–5m50s | 1m14s |
+
+All four agents ran the acceptance tests themselves, with zero sandbox denials. The
+controller still runs its own check; the difference is that agents are no longer working
+blind.
+
+This is also the clearest argument so far for the forum. The blocker was invisible in every
+diff, invisible to the controller — whose check passed every time — and only surfaced
+because an observer read what the agent actually said.
+
 ## Not yet tested
 
 Merge conflicts between concurrent attempts on the same files; the retry path on a real

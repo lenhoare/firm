@@ -67,7 +67,7 @@ enabled = true
 max_runs = 40
 description = "Alternative coding worker; use for implementation or an independent perspective. Model steps are capped; no CLI tool-call count cap."
 input = "prompt_file"
-args = ["exec", "--prompt-file", "{prompt_file}", "--workspace", "{workspace}", "--approval-mode", "never", "--approval-judge", "off", "--json", "--max-model-steps", "{max_turns}"]
+args = ["exec", "--prompt-file", "{prompt_file}", "--workspace", "{workspace}", "--approval-mode", "never", "--approval-judge", "off", "--disable-sandbox", "--json", "--max-model-steps", "{max_turns}"]
 
 [allowances]
 manager_turns = 4
