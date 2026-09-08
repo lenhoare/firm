@@ -105,13 +105,20 @@ Agents working in parallel share what they learn. Two sources, deliberately:
 - The **controller** publishes from evidence it already holds — outcome, agent exit code,
   check verdict, files changed — which costs nothing and no agent can skip.
 - An **observer** (`forum_observer`, default `grok`, empty disables) reads each finished
-  attempt's event stream and writes up what only that agent knew: dead ends, constraints,
-  environment facts. It runs on a provider's `observer_args`, is budget-gated like any
-  model call, and never blocks work — the task reaches its state first.
+  attempt's event stream and writes up what only that agent knew — dead ends and
+  constraints, and approaches worth reusing. It runs on a provider's `observer_args`, is
+  budget-gated like any model call, and never blocks work: the task reaches its state
+  first. Its entries are attributed `<provider> (observer)`, since the same provider is
+  often also a worker.
+- **Workers may leave notes**, optionally. The prompt names a file beside the worktree —
+  never inside it, so writing to it cannot conflict between attempts or muddy the record
+  of which files a task touched. JSON lines are parsed; prose is kept as a single note.
+  This is offered, never required, and unscored. Agents do sometimes use it well: one
+  spotted that two earlier entries contradicted each other, worked out that the tests only
+  covered ASCII so it did not matter, and wrote down the resolution.
 
-Agents asked to self-report were rejected: it contradicts "change only this file", a shared
-file in a worktree would be the most conflict-prone thing in the repo, and unrewarded
-side-work is the first thing a cheap model drops.
+Entries cover what worked as well as what did not. A dead end saves another agent a wasted
+run; an `approach` saves them the thinking.
 
 What an observer learned outlives its run. In a fully parallel run every agent starts
 before anything has been published, so a run-scoped forum is written and never read — an

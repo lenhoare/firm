@@ -147,6 +147,35 @@ async fn the_controller_publishes_outcomes_and_a_later_agent_is_shown_them() {
 }
 
 #[tokio::test]
+async fn a_worker_can_leave_a_note_for_the_team() {
+    let mut harness = harness().await;
+    harness.config.forum_observer = String::new();
+    let spec = RunSpec {
+        objective: "Let workers contribute".into(),
+        tasks: vec![task("noted", "CREATE:noted.txt NOTE:prefer-iterators", &[])],
+    };
+    let (run_id, board) = drive(&harness, spec).await;
+
+    let entries = board.forum().entries(&run_id).unwrap();
+    let note = entries
+        .iter()
+        .find(|e| e.author == "fake")
+        .expect("the worker's own note reaches the forum, under its own name");
+    assert!(
+        !entries.iter().any(|e| e.author.contains("observer")),
+        "a worker's note is not attributed to the observer"
+    );
+    assert_eq!(note.kind, super::forum::Kind::Approach, "good thinking has a kind of its own");
+    assert!(note.title.contains("prefer-iterators"), "{}", note.title);
+
+    // The note lives outside the worktree, so it never shows up as a changed file.
+    let attempts = board.attempts(&run_id).unwrap();
+    let files = attempts[0]["files_changed"].as_array().unwrap();
+    assert_eq!(files.len(), 1, "writing a note is not changing a file: {files:?}");
+    assert_eq!(files[0], "noted.txt");
+}
+
+#[tokio::test]
 async fn a_failed_attempt_warns_the_group_rather_than_disappearing() {
     let mut harness = harness().await;
     harness.config.forum_observer = String::new();

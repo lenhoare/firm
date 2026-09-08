@@ -5,9 +5,15 @@
 //! skipped. An **observer** model reads a finished attempt's event stream and writes the
 //! things only the agent knew: what it tried and abandoned, constraints it discovered.
 //!
-//! Asking workers to self-report was rejected: it contradicts the "change only this file"
-//! instruction, a shared file in the worktree would be the most merge-conflict-prone thing
-//! in the repository, and unrewarded side-work is the first thing a cheap model drops.
+//! Workers may also leave notes, but only as an optional extra. Relying on them was
+//! rejected: a shared file inside the worktree would be the most merge-conflict-prone
+//! thing in the repository and would muddy the record of which files a task touched, and
+//! unrewarded side-work is the first thing a cheap model drops. So the channel is a file
+//! beside the worktree, offered and never required — and in practice agents do sometimes
+//! use it well.
+//!
+//! Entries cover what worked as well as what did not. A dead end saves another agent a
+//! wasted run; an approach worth reusing saves them the thinking.
 //!
 //! Entries are untrusted text written by agents. They are rendered into later prompts as
 //! attributed, quoted data — never as instructions.
@@ -26,6 +32,9 @@ pub enum Kind {
     DeadEnd,
     Blocker,
     ApiFact,
+    /// A technique that worked and is worth reusing. Dead ends save a wasted run; a good
+    /// approach saves the thinking. Both are things a diff does not explain.
+    Approach,
     Convention,
     Finding,
     Decision,
@@ -38,6 +47,7 @@ impl Kind {
             Self::DeadEnd => "dead_end",
             Self::Blocker => "blocker",
             Self::ApiFact => "api_fact",
+            Self::Approach => "approach",
             Self::Convention => "convention",
             Self::Finding => "finding",
             Self::Decision => "decision",
@@ -49,6 +59,7 @@ impl Kind {
             "dead_end" | "deadend" | "dead-end" => Self::DeadEnd,
             "blocker" => Self::Blocker,
             "api_fact" | "apifact" | "api-fact" => Self::ApiFact,
+            "approach" | "technique" => Self::Approach,
             "convention" => Self::Convention,
             "finding" => Self::Finding,
             "decision" => Self::Decision,
@@ -62,10 +73,11 @@ impl Kind {
             Self::DeadEnd => 0,
             Self::Blocker => 1,
             Self::ApiFact => 2,
-            Self::Convention => 3,
-            Self::Finding => 4,
-            Self::Decision => 5,
-            Self::Outcome => 6,
+            Self::Approach => 3,
+            Self::Convention => 4,
+            Self::Finding => 5,
+            Self::Decision => 6,
+            Self::Outcome => 7,
         }
     }
 }
