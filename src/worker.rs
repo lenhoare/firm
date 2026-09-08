@@ -12,11 +12,72 @@ use tokio::{
 };
 
 const OUTPUT_LIMIT: usize = 48 * 1024;
+/// Structured event streams are voluminous, and the interesting part is the end. Keep the
+/// opening for context and as much of the tail as the budget allows.
+const HEAD_LIMIT: usize = 8 * 1024;
+const TAIL_LIMIT: usize = OUTPUT_LIMIT - HEAD_LIMIT;
 
 pub struct WorkerResult {
     pub output: String,
     pub exit_code: Option<i32>,
     pub interruption: Option<String>,
+}
+
+/// What a running worker is doing right now, updated as its output arrives. This is the
+/// "look in on it" signal: an agent that has stopped emitting events has either finished
+/// without exiting or is stuck, and either way should not hold a slot for the full timeout.
+#[derive(Debug)]
+pub struct ActivityState {
+    pub lines: u64,
+    pub bytes: u64,
+    pub label: String,
+    last: std::time::Instant,
+}
+
+impl ActivityState {
+    fn new() -> Self {
+        Self {
+            lines: 0,
+            bytes: 0,
+            label: "starting".into(),
+            last: std::time::Instant::now(),
+        }
+    }
+    pub fn idle_for(&self) -> Duration {
+        self.last.elapsed()
+    }
+    pub fn summary(&self) -> String {
+        format!(
+            "{} events · quiet {}s · {}",
+            self.lines,
+            self.idle_for().as_secs(),
+            self.label
+        )
+    }
+}
+
+pub type Activity = std::sync::Arc<std::sync::Mutex<ActivityState>>;
+
+pub fn activity() -> Activity {
+    std::sync::Arc::new(std::sync::Mutex::new(ActivityState::new()))
+}
+
+/// A short label for one line of agent output. Both shipped event formats are JSON per
+/// line but disagree on the discriminator, so try each and fall back to raw text — the
+/// point is a human-readable hint, not a parsed model.
+fn label_for(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        for key in ["payload_type", "type", "phase", "kind"] {
+            if let Some(label) = value.get(key).and_then(serde_json::Value::as_str) {
+                return Some(label.to_string());
+            }
+        }
+    }
+    Some(trimmed.chars().take(60).collect())
 }
 
 // A task-owned process group cannot outlive a normal controller exit or cancelled future.
@@ -47,6 +108,53 @@ async fn read_bounded(mut reader: impl AsyncRead + Unpin) -> Result<String> {
         text.push_str("\n[Output exceeded retention limit; inspect workspace evidence.]");
     }
     Ok(text)
+}
+
+/// Read a worker's output line by line, updating `activity` as it arrives, and retain a
+/// bounded head and tail. Reading incrementally is what makes live progress and idle
+/// detection possible; the previous reader only surfaced anything once the stream closed.
+async fn read_streaming(reader: impl AsyncRead + Unpin, activity: Activity) -> Result<String> {
+    use tokio::io::AsyncBufReadExt;
+    let mut lines = tokio::io::BufReader::new(reader).lines();
+    let mut head = String::new();
+    let mut tail: std::collections::VecDeque<String> = std::collections::VecDeque::new();
+    let mut tail_bytes = 0usize;
+    let mut total = 0u64;
+    let mut dropped = 0u64;
+    while let Some(line) = lines.next_line().await? {
+        total += line.len() as u64 + 1;
+        if let Ok(mut state) = activity.lock() {
+            state.lines += 1;
+            state.bytes = total;
+            state.last = std::time::Instant::now();
+            if let Some(label) = label_for(&line) {
+                state.label = label;
+            }
+        }
+        if head.len() < HEAD_LIMIT {
+            head.push_str(&line);
+            head.push('\n');
+            continue;
+        }
+        tail_bytes += line.len() + 1;
+        tail.push_back(line);
+        while tail_bytes > TAIL_LIMIT {
+            match tail.pop_front() {
+                Some(old) => {
+                    tail_bytes -= old.len() + 1;
+                    dropped += 1;
+                }
+                None => break,
+            }
+        }
+    }
+    if tail.is_empty() {
+        return Ok(head);
+    }
+    Ok(format!(
+        "{head}\n[{dropped} intermediate lines dropped; tail follows]\n{}",
+        tail.into_iter().collect::<Vec<_>>().join("\n")
+    ))
 }
 
 pub fn prompt(assignment: &Assignment) -> String {
@@ -154,7 +262,18 @@ pub fn prepare_prompt_in(
 pub async fn run(
     config: &Config,
     prepared: &Prepared,
+    cancel: watch::Receiver<u64>,
+) -> Result<WorkerResult> {
+    run_watched(config, prepared, cancel, activity()).await
+}
+
+/// As `run`, but the caller keeps a handle on the worker's live activity so it can be
+/// shown while the run is in progress.
+pub async fn run_watched(
+    config: &Config,
+    prepared: &Prepared,
     mut cancel: watch::Receiver<u64>,
+    activity: Activity,
 ) -> Result<WorkerResult> {
     anyhow::ensure!(!cancel.has_changed()?, "Cancelled before worker spawn");
     let mut command = Command::new(&prepared.program);
@@ -177,7 +296,10 @@ pub async fn run(
         )
     })?;
     let group = ProcessGroup(child.id().context("Worker has no PID")?);
-    let stdout = tokio::spawn(read_bounded(child.stdout.take().unwrap()));
+    let stdout = tokio::spawn(read_streaming(
+        child.stdout.take().unwrap(),
+        activity.clone(),
+    ));
     let stderr = tokio::spawn(read_bounded(child.stderr.take().unwrap()));
     if let Some(mut stdin) = child.stdin.take() {
         tokio::select! {
@@ -185,10 +307,33 @@ pub async fn run(
             _ = cancel.changed() => bail!("Worker cancelled while sending prompt"),
         }
     }
-    let outcome = tokio::select! {
-        result = child.wait() => result.map_err(anyhow::Error::from),
-        _ = cancel.changed() => Err(anyhow::anyhow!("Worker cancelled by controller")),
-        _ = tokio::time::sleep(Duration::from_secs(config.allowances.worker_timeout_seconds)) => Err(anyhow::anyhow!("Worker reached its time limit")),
+    let deadline = tokio::time::sleep(Duration::from_secs(
+        config.allowances.worker_timeout_seconds,
+    ));
+    tokio::pin!(deadline);
+    let idle_limit = config.allowances.idle_timeout_seconds;
+    let mut poll = tokio::time::interval(Duration::from_secs(5));
+    poll.tick().await; // The first tick completes immediately.
+    let outcome = loop {
+        tokio::select! {
+            result = child.wait() => break result.map_err(anyhow::Error::from),
+            _ = cancel.changed() => break Err(anyhow::anyhow!("Worker cancelled by controller")),
+            _ = &mut deadline => break Err(anyhow::anyhow!("Worker reached its time limit")),
+            _ = poll.tick() => {
+                // An agent that has gone quiet has finished without exiting, or is stuck.
+                // Either way its work is already on disk and the slot should be released.
+                if idle_limit > 0
+                    && let Ok(state) = activity.lock()
+                    && state.lines > 0
+                    && state.idle_for() >= Duration::from_secs(idle_limit)
+                {
+                    break Err(anyhow::anyhow!(
+                        "Worker went quiet for {idle_limit}s after {} events; treated as finished",
+                        state.lines
+                    ));
+                }
+            }
+        }
     };
     drop(group); // Includes descendants holding stdout/stderr open after parent exit.
     if outcome.is_err() {
@@ -423,6 +568,66 @@ mod tests {
             assert!(prepare(&config, &provider, &assignment).is_err());
         }
     }
+    #[tokio::test]
+    async fn an_agent_that_finishes_but_never_exits_is_released_early() {
+        // Exactly the muse failure: emit some events, do the work, then hang forever.
+        // Without the idle check this holds a slot for the whole worker timeout.
+        use std::{os::unix::fs::PermissionsExt, path::Path};
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("hangs-after-working");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\necho '{\"payload_type\":\"run.output.delta\"}'\necho '{\"payload_type\":\"run.done\"}'\nsleep 300\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut config = Config::read(Path::new("firm.toml")).unwrap();
+        config.workspace = dir.path().to_owned();
+        config.allowances.worker_timeout_seconds = 300;
+        config.allowances.idle_timeout_seconds = 6;
+        let mut provider = config.providers[0].clone();
+        provider.command = script.display().to_string();
+        provider.args = vec![];
+        provider.input = PromptInput::Stdin;
+
+        let prepared = prepare_prompt(&config, &provider, "go".into()).unwrap();
+        let (_tx, rx) = watch::channel(0);
+        let started = std::time::Instant::now();
+        let result = run(&config, &prepared, rx).await.unwrap();
+
+        assert!(started.elapsed() < Duration::from_secs(60), "released early");
+        let reason = result.interruption.expect("recorded as an interruption");
+        assert!(reason.contains("went quiet"), "{reason}");
+        assert!(reason.contains("2 events"), "reports how much it emitted: {reason}");
+        // The work it did emit is still retained for scoring.
+        assert!(result.output.contains("run.output.delta"));
+    }
+
+    #[tokio::test]
+    async fn a_steadily_working_agent_is_not_cut_off_as_idle() {
+        use std::{os::unix::fs::PermissionsExt, path::Path};
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("keeps-talking");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nfor i in 1 2 3 4 5 6 7 8; do echo \"{\\\"payload_type\\\":\\\"step\\\"}\"; sleep 1; done\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut config = Config::read(Path::new("firm.toml")).unwrap();
+        config.workspace = dir.path().to_owned();
+        config.allowances.idle_timeout_seconds = 5;
+        let mut provider = config.providers[0].clone();
+        provider.command = script.display().to_string();
+        provider.args = vec![];
+        provider.input = PromptInput::Stdin;
+        let prepared = prepare_prompt(&config, &provider, "go".into()).unwrap();
+        let (_tx, rx) = watch::channel(0);
+        let result = run(&config, &prepared, rx).await.unwrap();
+        assert_eq!(result.exit_code, Some(0), "ran to completion");
+        assert!(result.interruption.is_none(), "steady output is not idleness");
+    }
+
     #[tokio::test]
     async fn bounded_output_keeps_draining() {
         let data = vec![b'x'; OUTPUT_LIMIT * 3];

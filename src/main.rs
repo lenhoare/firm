@@ -379,6 +379,11 @@ async fn watch_run(board_path: &Path, workspace: &Path) -> Result<()> {
                         format!("  [{files}]")
                     }
                 );
+                // What the agent is doing right now, while it is still running.
+                let doing = attempt["activity"].as_str().unwrap_or_default();
+                if attempt["state"] == "running" && !doing.is_empty() {
+                    println!("        {doing}");
+                }
             }
             if !task.note.trim().is_empty() && task.state.as_str() != "merged" {
                 println!("      {}", task.note.lines().next().unwrap_or_default());

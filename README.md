@@ -89,6 +89,12 @@ breaks the integration is reverted.
   perfectly good focused work — the exact problem the second v0 live trial reported. The
   run-level `verify_command` is then used once at the end, and reported rather than
   enforced. The agent is told the exact command it will be judged by.
+- Workers run with their **structured event streams** on (`--json` for Muse,
+  `--output-format streaming-json` for Grok). Output is read incrementally, so the board
+  records what each agent is doing while it works — visible in `--watch` — and
+  `idle_timeout_seconds` releases an agent that has gone quiet after producing events.
+  That is the "finished the work but never exited" case, which cost one early run fifteen
+  minutes of wall clock for about one minute of work.
 - Rolling allowances are enforced before anything external happens, and counted from a
   durable ledger that spans runs: `worker_runs` overall, `max_runs` per provider, plus a
   per-provider cooldown after a rate-limited response. When an allowance runs out the

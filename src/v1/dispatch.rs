@@ -435,7 +435,32 @@ impl Engine {
             prompt,
             workspace.path.clone(),
         )?;
-        let result = worker::run(&self.config, &prepared, self.cancel.clone()).await?;
+
+        // Look in on the agent while it works, and record what it is doing so a watcher
+        // can see it. This is also what makes the idle timeout meaningful.
+        let activity = worker::activity();
+        let watcher = {
+            let activity = activity.clone();
+            let board = Arc::clone(&self.board);
+            let attempt_id = record.id.clone();
+            tokio::spawn(async move {
+                let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
+                loop {
+                    tick.tick().await;
+                    let summary = match activity.lock() {
+                        Ok(state) => state.summary(),
+                        Err(_) => break,
+                    };
+                    if board.lock().await.set_activity(&attempt_id, &summary).is_err() {
+                        break;
+                    }
+                }
+            })
+        };
+        let result =
+            worker::run_watched(&self.config, &prepared, self.cancel.clone(), activity).await;
+        watcher.abort();
+        let result = result?;
 
         // Native exit and the controller's verdict stay separate facts.
         record.native_exit = result.exit_code;

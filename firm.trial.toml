@@ -37,7 +37,7 @@ description = "Default coordinator and capable coding worker; use for implementa
 input = "prompt_file"
 # Worker-only unattended permissions. Keep manager/meeting invocations read-only.
 # Do not authorize the inherited personal Telegram integration for coding tasks.
-args = ["--prompt-file", "{prompt_file}", "--cwd", "{workspace}", "--output-format", "plain", "--permission-mode", "bypassPermissions", "--deny", "MCPTool(telegram__*)", "--no-subagents", "--max-turns", "{max_turns}"]
+args = ["--prompt-file", "{prompt_file}", "--cwd", "{workspace}", "--output-format", "streaming-json", "--permission-mode", "bypassPermissions", "--deny", "MCPTool(telegram__*)", "--no-subagents", "--max-turns", "{max_turns}"]
 
 
 [[providers]]
@@ -66,7 +66,7 @@ enabled = true
 max_runs = 6
 description = "Alternative coding worker; use for implementation or an independent perspective. Model steps are capped; no CLI tool-call count cap."
 input = "prompt_file"
-args = ["exec", "--prompt-file", "{prompt_file}", "--workspace", "{workspace}", "--approval-mode", "never", "--approval-judge", "off", "--max-model-steps", "{max_turns}"]
+args = ["exec", "--prompt-file", "{prompt_file}", "--workspace", "{workspace}", "--approval-mode", "never", "--approval-judge", "off", "--json", "--max-model-steps", "{max_turns}"]
 
 [allowances]
 manager_turns = 4
@@ -75,6 +75,7 @@ window_seconds = 18000
 manager_interval_seconds = 300
 max_turn_seconds = 300
 worker_timeout_seconds = 900
+idle_timeout_seconds = 120
 worker_max_turns = 64
 worker_max_tool_calls = 64
 max_used_percent = 50.0

@@ -194,11 +194,14 @@ impl Board {
             "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
             CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, objective TEXT NOT NULL, base_commit TEXT NOT NULL, integration_branch TEXT NOT NULL, created_at INTEGER NOT NULL, finished_at INTEGER);
             CREATE TABLE IF NOT EXISTS tasks (id TEXT NOT NULL, run_id TEXT NOT NULL, title TEXT NOT NULL, brief TEXT NOT NULL, acceptance TEXT NOT NULL, depends_on TEXT NOT NULL, class TEXT NOT NULL, provider TEXT, verify TEXT, state TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, note TEXT NOT NULL DEFAULT '', PRIMARY KEY (run_id, id));
-            CREATE TABLE IF NOT EXISTS attempts (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, task_id TEXT NOT NULL, provider TEXT NOT NULL, branch TEXT NOT NULL, base_commit TEXT NOT NULL, started_at INTEGER NOT NULL, finished_at INTEGER, native_exit INTEGER, interruption TEXT, passed INTEGER, score REAL, detail TEXT NOT NULL DEFAULT '', files_changed TEXT NOT NULL DEFAULT '[]', output TEXT NOT NULL DEFAULT '', state TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS attempts (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, task_id TEXT NOT NULL, provider TEXT NOT NULL, branch TEXT NOT NULL, base_commit TEXT NOT NULL, started_at INTEGER NOT NULL, finished_at INTEGER, native_exit INTEGER, interruption TEXT, passed INTEGER, score REAL, detail TEXT NOT NULL DEFAULT '', files_changed TEXT NOT NULL DEFAULT '[]', output TEXT NOT NULL DEFAULT '', activity TEXT NOT NULL DEFAULT '', state TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS attempts_task ON attempts(run_id, task_id);
             CREATE INDEX IF NOT EXISTS attempts_usage ON attempts(provider, started_at);
             CREATE TABLE IF NOT EXISTS cooldowns (provider TEXT PRIMARY KEY, until INTEGER NOT NULL);",
         )?;
+        // `CREATE TABLE IF NOT EXISTS` never alters an existing table, so columns added
+        // after a board was created must be migrated in explicitly.
+        add_column(&conn, "attempts", "activity", "TEXT NOT NULL DEFAULT ''")?;
         Ok(Self { conn })
     }
 
@@ -460,9 +463,18 @@ impl Board {
         Ok(())
     }
 
+    /// Record what a running attempt is doing, so a watcher can look in on it.
+    pub fn set_activity(&mut self, attempt_id: &str, activity: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE attempts SET activity=?2 WHERE id=?1",
+            params![attempt_id, activity],
+        )?;
+        Ok(())
+    }
+
     pub fn attempts(&self, run_id: &str) -> Result<Vec<Value>> {
         let mut query = self.conn.prepare(
-            "SELECT id,task_id,provider,branch,base_commit,started_at,finished_at,native_exit,interruption,passed,score,detail,files_changed,output,state FROM attempts WHERE run_id=?1 ORDER BY started_at",
+            "SELECT id,task_id,provider,branch,base_commit,started_at,finished_at,native_exit,interruption,passed,score,detail,files_changed,output,activity,state FROM attempts WHERE run_id=?1 ORDER BY started_at",
         )?;
         let rows = query.query_map([run_id], |r| {
             Ok(serde_json::json!({
@@ -480,7 +492,8 @@ impl Board {
                 "detail": r.get::<_, String>(11)?,
                 "files_changed": serde_json::from_str::<Value>(&r.get::<_, String>(12)?).unwrap_or(Value::Null),
                 "output": r.get::<_, String>(13)?,
-                "state": r.get::<_, String>(14)?,
+                "activity": r.get::<_, String>(14)?,
+                "state": r.get::<_, String>(15)?,
             }))
         })?;
         rows.map(|r| r.map_err(anyhow::Error::from)).collect()
@@ -535,6 +548,22 @@ impl Board {
             })
             .optional()?)
     }
+}
+
+/// Add a column to an existing table if it is not already present.
+fn add_column(conn: &Connection, table: &str, column: &str, definition: &str) -> Result<()> {
+    let present = conn
+        .prepare(&format!("PRAGMA table_info({table})"))?
+        .query_map([], |r| r.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<String>>>()?
+        .iter()
+        .any(|name| name == column);
+    if !present {
+        conn.execute_batch(&format!(
+            "ALTER TABLE {table} ADD COLUMN {column} {definition}"
+        ))?;
+    }
+    Ok(())
 }
 
 /// Depth-first cycle detection over the authored graph.

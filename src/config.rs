@@ -156,6 +156,10 @@ pub struct Allowances {
     pub manager_interval_seconds: u64,
     pub max_turn_seconds: u64,
     pub worker_timeout_seconds: u64,
+    /// Stop a worker that has produced no output for this long. Catches an agent that
+    /// finished its work but never exited. 0 disables the check.
+    #[serde(default)]
+    pub idle_timeout_seconds: u64,
     pub worker_max_turns: u32,
     pub worker_max_tool_calls: u32,
     pub max_used_percent: f64,
