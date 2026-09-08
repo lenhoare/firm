@@ -31,6 +31,7 @@ async fn harness() -> Harness {
     config.state_dir = state.path().to_path_buf();
     // Generous by default so only the tests that are about budgets are limited by them.
     config.allowances.worker_runs = 50;
+    config.forum_observer = "fake".into();
     config.providers = vec![Provider {
         id: "fake".into(),
         name: "Fake".into(),
@@ -44,6 +45,7 @@ async fn harness() -> Harness {
         description: "Test agent".into(),
         meeting_args: None,
         manager_args: None,
+        observer_args: None,
     }];
     Harness {
         workspace_path: workspace.path().to_path_buf(),
@@ -73,6 +75,58 @@ fn scorer() -> Scorer {
         command: vec!["sh".into(), "-c".into(), "! test -f BROKEN".into()],
         timeout_seconds: 30,
     }
+}
+
+#[tokio::test]
+async fn the_controller_publishes_outcomes_and_a_later_agent_is_shown_them() {
+    let mut harness = harness().await;
+    harness.config.forum_observer = String::new(); // no observer model in tests
+    // The fake agent echoes its prompt into the file it writes, so we can prove what the
+    // second agent was actually told.
+    let spec = RunSpec {
+        objective: "Share what happened".into(),
+        tasks: vec![
+            task("first", "CREATE:first.txt", &[]),
+            task("second", "CREATE:second.txt", &["first"]),
+        ],
+    };
+    let (run_id, board) = drive(&harness, spec).await;
+
+    let entries = board.forum().entries(&run_id).unwrap();
+    assert!(!entries.is_empty(), "the controller writes without any agent cooperation");
+    let first = entries.iter().find(|e| e.task_id.as_deref() == Some("first")).unwrap();
+    assert_eq!(first.author, "controller");
+    assert!(first.title.contains("first"), "{}", first.title);
+    assert!(first.body.contains("first.txt"), "records the evidence: {}", first.body);
+
+    // The second task, dispatched after the first merged, is shown the first's entry —
+    // and is not shown notes about its own task.
+    let slice = board.forum().slice_for(&run_id, "second", 8192).unwrap();
+    assert!(slice.contains("first"), "{slice}");
+    assert!(!slice.contains("second"), "an agent is not shown notes about its own task");
+}
+
+#[tokio::test]
+async fn a_failed_attempt_warns_the_group_rather_than_disappearing() {
+    let mut harness = harness().await;
+    harness.config.forum_observer = String::new();
+    let spec = RunSpec {
+        objective: "Record failures too".into(),
+        tasks: vec![task("doomed", "This cannot work. FAILNOW", &[])],
+    };
+    let (run_id, board) = drive(&harness, spec).await;
+
+    let entries = board.forum().entries(&run_id).unwrap();
+    let blocker = entries
+        .iter()
+        .find(|e| e.kind == super::forum::Kind::Blocker)
+        .expect("a rejected attempt is published as a blocker");
+    assert!(blocker.title.contains("doomed"), "{}", blocker.title);
+    assert!(
+        blocker.body.contains("Agent exit: 1"),
+        "the agent's own exit code is in the note: {}",
+        blocker.body
+    );
 }
 
 #[tokio::test]

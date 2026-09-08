@@ -18,7 +18,7 @@ async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() || args.iter().any(|a| a == "--help" || a == "-h") {
         println!(
-            "Firm 0.1 — experimental agent team\n\n  firm serve [--live] [--config PATH]\n  firm probe [--config PATH]\n  firm board --tasks PATH [--live] [--config PATH]\n\nBoard runs the v1 engine: several agents work in parallel on a task graph, each in its\nown git worktree; only work passing verify_command is merged. The workspace must be a\nclean git repository and your own branch is never modified.\n\nDefault: demo mode, localhost:7433, firm.toml.\nProbe reads Codex login type and rate limits; it never starts a model turn.\nLive mode uses your existing Codex subscription and configured worker CLI logins.\nStart app-server separately: codex app-server --listen ws://127.0.0.1:4500"
+            "Firm 0.1 — experimental agent team\n\n  firm serve [--live] [--config PATH]\n  firm probe [--config PATH]\n  firm board --tasks PATH [--live] [--config PATH]\n  firm board [--watch | --forum] [--config PATH]\n\nBoard runs the v1 engine: several agents work in parallel on a task graph, each in its\nown git worktree; only work passing verify_command is merged. The workspace must be a\nclean git repository and your own branch is never modified.\n\nDefault: demo mode, localhost:7433, firm.toml.\nProbe reads Codex login type and rate limits; it never starts a model turn.\nLive mode uses your existing Codex subscription and configured worker CLI logins.\nStart app-server separately: codex app-server --listen ws://127.0.0.1:4500"
         );
         return Ok(());
     }
@@ -26,6 +26,7 @@ async fn main() -> Result<()> {
     let mut tasks_path: Option<&str> = None;
     let mut live = false;
     let mut watch = false;
+    let mut forum = false;
     let mut index = 1;
     while index < args.len() {
         match args[index].as_str() {
@@ -39,13 +40,14 @@ async fn main() -> Result<()> {
                 tasks_path = Some(args.get(index).context("Missing tasks path")?);
             }
             "--watch" => watch = true,
+            "--forum" => forum = true,
             other => bail!("Unknown argument: {other}"),
         }
         index += 1;
     }
     let config = Config::read(Path::new(config_path))?;
     if args[0] == "board" {
-        return board(config, tasks_path, live, watch).await;
+        return board(config, tasks_path, live, watch, forum).await;
     }
     if args[0] == "probe" {
         let rpc = codex::Codex::connect(&config.codex_url)
@@ -178,8 +180,28 @@ async fn main() -> Result<()> {
 /// Run one v1 board to completion. Several agents work in parallel on a task graph, each
 /// in an isolated git worktree; the controller scores every attempt and merges only what
 /// passes. There is no manager in this loop.
-async fn board(config: Config, tasks_path: Option<&str>, live: bool, watch: bool) -> Result<()> {
+async fn board(
+    config: Config,
+    tasks_path: Option<&str>,
+    live: bool,
+    watch: bool,
+    forum: bool,
+) -> Result<()> {
     let board_path = v1::dispatch::board_path(&config.state_dir, live);
+    if forum {
+        let board = v1::board::Board::open_readonly(&board_path)?;
+        let run_id = board.latest_run()?.context("No runs yet")?;
+        let entries = board.forum().entries(&run_id)?;
+        println!("Forum for run {} — {} entries\n", &run_id[..8], entries.len());
+        for entry in entries {
+            println!("[{}] {}  (by {})", entry.kind.as_str(), entry.title, entry.author);
+            for line in entry.body.lines() {
+                println!("    {line}");
+            }
+            println!();
+        }
+        return Ok(());
+    }
     if watch {
         return watch_run(&board_path, &config.workspace).await;
     }

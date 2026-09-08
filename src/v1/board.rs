@@ -194,7 +194,7 @@ impl Board {
             "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
             CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, objective TEXT NOT NULL, base_commit TEXT NOT NULL, integration_branch TEXT NOT NULL, created_at INTEGER NOT NULL, finished_at INTEGER);
             CREATE TABLE IF NOT EXISTS tasks (id TEXT NOT NULL, run_id TEXT NOT NULL, title TEXT NOT NULL, brief TEXT NOT NULL, acceptance TEXT NOT NULL, depends_on TEXT NOT NULL, class TEXT NOT NULL, provider TEXT, verify TEXT, state TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, note TEXT NOT NULL DEFAULT '', PRIMARY KEY (run_id, id));
-            CREATE TABLE IF NOT EXISTS attempts (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, task_id TEXT NOT NULL, provider TEXT NOT NULL, branch TEXT NOT NULL, base_commit TEXT NOT NULL, started_at INTEGER NOT NULL, finished_at INTEGER, native_exit INTEGER, interruption TEXT, passed INTEGER, score REAL, detail TEXT NOT NULL DEFAULT '', files_changed TEXT NOT NULL DEFAULT '[]', output TEXT NOT NULL DEFAULT '', activity TEXT NOT NULL DEFAULT '', state TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS attempts (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, task_id TEXT NOT NULL, provider TEXT NOT NULL, branch TEXT NOT NULL, base_commit TEXT NOT NULL, started_at INTEGER NOT NULL, finished_at INTEGER, native_exit INTEGER, interruption TEXT, passed INTEGER, score REAL, detail TEXT NOT NULL DEFAULT '', files_changed TEXT NOT NULL DEFAULT '[]', output TEXT NOT NULL DEFAULT '', activity TEXT NOT NULL DEFAULT '', observation TEXT NOT NULL DEFAULT '', state TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS attempts_task ON attempts(run_id, task_id);
             CREATE INDEX IF NOT EXISTS attempts_usage ON attempts(provider, started_at);
             CREATE TABLE IF NOT EXISTS cooldowns (provider TEXT PRIMARY KEY, until INTEGER NOT NULL);",
@@ -202,7 +202,14 @@ impl Board {
         // `CREATE TABLE IF NOT EXISTS` never alters an existing table, so columns added
         // after a board was created must be migrated in explicitly.
         add_column(&conn, "attempts", "activity", "TEXT NOT NULL DEFAULT ''")?;
+        add_column(&conn, "attempts", "observation", "TEXT NOT NULL DEFAULT ''")?;
+        super::forum::Forum::initialize(&conn)?;
         Ok(Self { conn })
+    }
+
+    /// The forum shares the board's database, so entries and attempts commit together.
+    pub fn forum(&self) -> super::forum::Forum<'_> {
+        super::forum::Forum::new(&self.conn)
     }
 
     /// Read-only handle for watching a run another process owns. Takes no lock and
@@ -468,6 +475,15 @@ impl Board {
         self.conn.execute(
             "UPDATE attempts SET activity=?2 WHERE id=?1",
             params![attempt_id, activity],
+        )?;
+        Ok(())
+    }
+
+    /// Keep what the observer actually replied, so a silent observer can be diagnosed.
+    pub fn set_observation(&mut self, attempt_id: &str, reply: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE attempts SET observation=?2 WHERE id=?1",
+            params![attempt_id, reply],
         )?;
         Ok(())
     }

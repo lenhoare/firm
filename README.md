@@ -100,6 +100,26 @@ breaks the integration is reverted.
   per-provider cooldown after a rate-limited response. When an allowance runs out the
   remaining tasks are **held** — left open for later, not failed.
 
+### The forum
+
+Agents working in parallel share what they learn. Two sources, deliberately:
+
+- The **controller** publishes from evidence it already holds — outcome, agent exit code,
+  check verdict, files changed — which costs nothing and no agent can skip.
+- An **observer** (`forum_observer`, default `grok`, empty disables) reads each finished
+  attempt's event stream and writes up what only that agent knew: dead ends, constraints,
+  environment facts. It runs on a provider's `observer_args`, is budget-gated like any
+  model call, and never blocks work — the task reaches its state first.
+
+Agents asked to self-report were rejected: it contradicts "change only this file", a shared
+file in a worktree would be the most conflict-prone thing in the repo, and unrewarded
+side-work is the first thing a cheap model drops.
+
+A bounded, relevance-ordered slice is injected into each agent's prompt — dead ends first,
+never notes about its own task. Entries are untrusted agent text, so they are rendered
+attributed and quoted, framed explicitly as observations rather than instructions. Read
+them with `firm board --forum`.
+
 Tasks are authored as JSON for now. Automatic decomposition by the manager, the shared
 forum, tier-aware routing, pluggable human/agent scorers and compete mode are the following
 milestones.

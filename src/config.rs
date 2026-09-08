@@ -23,6 +23,22 @@ pub struct Config {
     pub allowances: Allowances,
     #[serde(default = "meeting_order")]
     pub meeting_order: Vec<String>,
+    /// Provider that reads finished attempts and writes forum entries. Empty disables
+    /// observation; the controller still writes entries from its own evidence.
+    #[serde(default = "default_observer")]
+    pub forum_observer: String,
+    /// Hard cap on the forum slice injected into a worker's prompt. An unbounded forum
+    /// poisons every prompt.
+    #[serde(default = "default_forum_bytes")]
+    pub forum_bytes: usize,
+}
+
+fn default_observer() -> String {
+    "grok".into()
+}
+
+fn default_forum_bytes() -> usize {
+    8 * 1024
 }
 
 fn meeting_order() -> Vec<String> {
@@ -105,6 +121,11 @@ pub struct Provider {
     /// Planning/review invocation. Never fall back to the implementation arguments.
     #[serde(default)]
     pub manager_args: Option<Vec<String>>,
+    /// Read-and-summarise invocation for the forum observer. An observer must answer
+    /// directly from its prompt; given planning arguments it will spend its turns using
+    /// tools and never reply. Falls back to `manager_args` when unset.
+    #[serde(default)]
+    pub observer_args: Option<Vec<String>>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq)]
@@ -144,6 +165,7 @@ fn legacy_providers() -> Vec<Provider> {
         description: "General-purpose coding worker".into(),
         meeting_args: None,
         manager_args: None,
+        observer_args: None,
     }]
 }
 
