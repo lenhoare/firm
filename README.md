@@ -95,6 +95,10 @@ breaks the integration is reverted.
   `idle_timeout_seconds` releases an agent that has gone quiet after producing events.
   That is the "finished the work but never exited" case, which cost one early run fifteen
   minutes of wall clock for about one minute of work.
+- Timeouts are per provider where it matters: a provider may set its own
+  `worker_timeout_seconds` and `idle_timeout_seconds`, falling back to the run's
+  allowances. Grok reliably finishes in well under a minute; muse ranges from 30s to
+  several minutes and has hung outright, so one global limit was too crude for both.
 - Rolling allowances are enforced before anything external happens, and counted from a
   durable ledger that spans runs: `worker_runs` overall, `max_runs` per provider, plus a
   per-provider cooldown after a rate-limited response. When an allowance runs out the

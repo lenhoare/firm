@@ -25,6 +25,8 @@ args = ["exec", "--model", "{codex_model}", "--sandbox", "workspace-write", "--a
 
 [[providers]]
 id = "grok"
+worker_timeout_seconds = 300
+idle_timeout_seconds = 60
 observer_args = ["--prompt-file", "{prompt_file}", "--cwd", "{workspace}", "--no-subagents", "--disable-web-search", "--tools", "", "--max-turns", "2", "--json-schema", "{\"type\":\"object\",\"properties\":{\"entries\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"kind\":{\"type\":\"string\"},\"title\":{\"type\":\"string\"},\"body\":{\"type\":\"string\"}},\"required\":[\"kind\",\"title\"]}}},\"required\":[\"entries\"]}"]
 tier = 1
 max_concurrent = 2
@@ -57,6 +59,8 @@ args = ["--prompt", "Carry out the assignment supplied on stdin.", "--output-for
 
 [[providers]]
 id = "muse"
+worker_timeout_seconds = 900
+idle_timeout_seconds = 120
 tier = 0
 max_concurrent = 3
 manager_args = ["exec", "--prompt-file", "{prompt_file}", "--workspace", "{workspace}", "--approval-mode", "never", "--approval-judge", "off", "--disable-write", "--disable-shell", "--disable-web-tools", "--no-foreign-personal-context", "--max-model-steps", "{max_turns}"]

@@ -454,12 +454,17 @@ impl Engine {
             self.prompt(task),
             self.forum_slice(&record.run_id, &task.id).await
         );
-        let prepared = worker::prepare_prompt_in(
-            &self.config,
-            provider,
-            prompt,
-            workspace.path.clone(),
-        )?;
+        // Providers differ enough that one global limit is crude, so a provider may set
+        // its own. Anything it does not set falls back to the run's allowances.
+        let mut config = self.config.clone();
+        if let Some(limit) = provider.worker_timeout_seconds {
+            config.allowances.worker_timeout_seconds = limit;
+        }
+        if let Some(limit) = provider.idle_timeout_seconds {
+            config.allowances.idle_timeout_seconds = limit;
+        }
+        let prepared =
+            worker::prepare_prompt_in(&config, provider, prompt, workspace.path.clone())?;
 
         // Look in on the agent while it works, and record what it is doing so a watcher
         // can see it. This is also what makes the idle timeout meaningful.
@@ -483,7 +488,7 @@ impl Engine {
             })
         };
         let result =
-            worker::run_watched(&self.config, &prepared, self.cancel.clone(), activity).await;
+            worker::run_watched(&config, &prepared, self.cancel.clone(), activity).await;
         watcher.abort();
         let result = result?;
 

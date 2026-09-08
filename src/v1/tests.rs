@@ -46,6 +46,8 @@ async fn harness() -> Harness {
         meeting_args: None,
         manager_args: None,
         observer_args: None,
+        worker_timeout_seconds: None,
+        idle_timeout_seconds: None,
     }];
     Harness {
         workspace_path: workspace.path().to_path_buf(),
@@ -75,6 +77,44 @@ fn scorer() -> Scorer {
         command: vec!["sh".into(), "-c".into(), "! test -f BROKEN".into()],
         timeout_seconds: 30,
     }
+}
+
+#[tokio::test]
+async fn a_provider_may_set_its_own_timeouts() {
+    // A slow agent under a provider-specific idle limit is cut off, while the run-wide
+    // allowance is generous. One global limit cannot express that.
+    let mut harness = harness().await;
+    harness.config.forum_observer = String::new();
+    harness.config.allowances.worker_timeout_seconds = 600;
+    harness.config.allowances.idle_timeout_seconds = 600;
+    harness.config.providers[0].idle_timeout_seconds = Some(5);
+
+    let script = harness.config.providers[0].command.clone();
+    std::fs::write(
+        &script,
+        "#!/bin/sh\necho '{\"payload_type\":\"start\"}'\nsleep 300\n",
+    )
+    .unwrap();
+
+    let spec = RunSpec {
+        objective: "Respect a provider's own limits".into(),
+        tasks: vec![task("slow", "CREATE:slow.txt", &[])],
+    };
+    let started = std::time::Instant::now();
+    let (run_id, board) = drive(&harness, spec).await;
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(120),
+        "the provider's 5s idle limit applied, not the run's 600s"
+    );
+    let attempts = board.attempts(&run_id).unwrap();
+    assert!(
+        attempts[0]["interruption"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("went quiet"),
+        "{:?}",
+        attempts[0]["interruption"]
+    );
 }
 
 #[tokio::test]

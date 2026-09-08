@@ -121,6 +121,13 @@ pub struct Provider {
     /// Planning/review invocation. Never fall back to the implementation arguments.
     #[serde(default)]
     pub manager_args: Option<Vec<String>>,
+    /// Per-provider overrides for the wall-clock and idle limits. Agents differ enough
+    /// that one global timeout is crude: a provider that reliably finishes in under a
+    /// minute should not hold a slot as long as one that legitimately needs ten.
+    #[serde(default)]
+    pub worker_timeout_seconds: Option<u64>,
+    #[serde(default)]
+    pub idle_timeout_seconds: Option<u64>,
     /// Read-and-summarise invocation for the forum observer. An observer must answer
     /// directly from its prompt; given planning arguments it will spend its turns using
     /// tools and never reply. Falls back to `manager_args` when unset.
@@ -166,6 +173,8 @@ fn legacy_providers() -> Vec<Provider> {
         meeting_args: None,
         manager_args: None,
         observer_args: None,
+        worker_timeout_seconds: None,
+        idle_timeout_seconds: None,
     }]
 }
 
