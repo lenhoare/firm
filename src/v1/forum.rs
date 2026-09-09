@@ -404,6 +404,51 @@ fn push_unique(kept: &mut Vec<String>, total: &mut usize, text: &str, budget: us
     kept.push(text.to_string());
 }
 
+/// Proposed changes to the plan, if the observer offered any. Parsed with the same
+/// tolerance as entries: a malformed proposal is skipped, never fatal, and the board
+/// decides whether any of them are allowed.
+pub fn parse_proposals(reply: &str) -> Vec<super::board::Mutation> {
+    let Some(start) = reply.find('{') else {
+        return Vec::new();
+    };
+    let Some(end) = reply.rfind('}') else {
+        return Vec::new();
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&reply[start..=end]) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    collect_proposals(&value, &mut found);
+    found.truncate(4);
+    found
+}
+
+fn collect_proposals(value: &serde_json::Value, found: &mut Vec<super::board::Mutation>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            if let Some(items) = map.get("proposals").and_then(serde_json::Value::as_array) {
+                for item in items {
+                    if let Ok(mutation) =
+                        serde_json::from_value::<super::board::Mutation>(item.clone())
+                    {
+                        found.push(mutation);
+                    }
+                }
+                return;
+            }
+            for child in map.values() {
+                collect_proposals(child, found);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_proposals(item, found);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Search a JSON document for an `entries` array of drafts, at any depth.
 fn find_entries(value: &serde_json::Value) -> Vec<Draft> {
     match value {
@@ -533,6 +578,26 @@ mod tests {
             .map(|i| format!("{{\"text\":\"line {i} of chatter\"}}\n"))
             .collect();
         assert!(distil_stream(&big, 300).len() <= 300);
+    }
+
+    #[test]
+    fn proposals_are_read_when_offered_and_absent_otherwise() {
+        use super::super::board::Mutation;
+        let reply = r#"{"entries":[{"kind":"finding","title":"t","body":"b"}],
+            "proposals":[
+              {"op":"add","task":{"id":"seam","title":"Add a test target","brief":"...",
+                "verify":["cargo","test","--test","seam"]}},
+              {"op":"block","task":"report","reason":"needs the parser first"},
+              {"op":"nonsense","task":"x"}
+            ]}"#;
+        let proposals = parse_proposals(reply);
+        assert_eq!(proposals.len(), 2, "the malformed one is skipped, not fatal");
+        assert!(matches!(&proposals[0], Mutation::Add { task } if task.id == "seam"));
+        assert!(matches!(&proposals[1], Mutation::Block { task, .. } if task == "report"));
+
+        // The common case: entries but no proposals at all.
+        assert!(parse_proposals(r#"{"entries":[{"kind":"finding","title":"t"}]}"#).is_empty());
+        assert!(parse_proposals("no json here").is_empty());
     }
 
     #[test]

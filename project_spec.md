@@ -220,9 +220,9 @@ observer discovered the toolchain would not run, that knowledge could reach a la
 prompt but could never change the plan. That bridge — *forum insight becomes a proposed
 graph mutation* — is the missing piece.
 
-### A mutable graph
+### A mutable graph — implemented
 
-The graph gains typed mutations: `add`, `split`, `merge`, `block`, `cancel`, `supersede`,
+The graph has typed mutations: `add`, `split`, `merge`, `block`, `cancel`, `supersede`,
 and dependency edits. Agents and the observer **propose**; the controller **decides**. A
 proposal carries a reason, and accepted mutations record who proposed them.
 
@@ -230,6 +230,18 @@ proposal carries a reason, and accepted mutations record who proposed them.
 a project whose whole premise is controlling spend. So proposals are gated exactly like
 dispatch: a cap on tasks per run, cycle checks on every accepted edge, and the existing
 rolling allowances. Anything that would make the graph unsatisfiable is rejected outright.
+
+Implemented as `Add`, `Block` and `DependOn`. Splitting a task is `Add` the children plus
+`Block` the parent; no separate operation was needed. Guards: a new task must carry its own
+`verify` command, dependencies must exist, the whole graph is revalidated after every change
+so no mutation can introduce a cycle, finished work cannot be revised, and a run is capped
+at `MAX_TASKS_PER_RUN`. Every proposal is recorded with its author and outcome — a refusal
+is evidence about the proposer, and dropping it silently would hide an agent repeatedly
+asking for something that will never be allowed.
+
+The observer is the first proposer: it already reads every finished attempt, and now may
+ask for a missing task or block one that cannot proceed, alongside its forum entries. Same
+call, no extra spend.
 
 This is worth more than getting the initial plan right, because **a bad plan is cheap to
 discover and cheap to fix once the graph can change.** Execution surfaces plan defects for
@@ -389,9 +401,9 @@ language.
    partition mode. See `v1_first_trials.md`.
 2. **Done.** The forum, with relevance slicing, a byte budget, cross-run carry-over and
    retirement.
-3. Tiered roster and routing are **done**. Next: single-manager decomposition with
-   validated checks and human approval, then a mutable graph with typed proposals, then
-   the forum-to-graph bridge, then routing from the attempts ledger.
+3. **Done.** Tiered roster and routing, single-manager decomposition with validated
+   checks, the mutable graph, and the forum-to-graph bridge. Cost is now recorded per run
+   as share of a rolling window. Next: routing from the attempts ledger.
 4. Run archive keyed by `run_id`, plus JSONL export and the Lab surface.
 5. Pluggable scorers: human and agent.
 6. Compete mode.

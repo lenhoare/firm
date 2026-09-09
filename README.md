@@ -157,7 +157,17 @@ never notes about its own task. Entries are untrusted agent text, so they are re
 attributed and quoted, framed explicitly as observations rather than instructions. Read
 them with `firm board --forum`.
 
-Not yet built: automatic decomposition by a manager (task graphs are hand-authored),
+The plan is not fixed once it starts. The observer may propose changes — a missing task,
+or one that cannot proceed — and the board decides. A proposal commits budget, so guards
+apply: a new task must bring its own check, the graph is revalidated so nothing can create
+a cycle, finished work cannot be revised, and a run is capped at 60 tasks. Every proposal
+is recorded with its author and whether it was accepted, and shown in the run summary.
+
+A run also records what it cost, sampled before and after: share of a rolling window for
+providers that report a percentage, tokens for those that report totals. Turn it off with
+`record_usage = false`.
+
+Not yet built:
 pluggable human and agent scorers, and compete mode — several agents attempting the *same*
 task with the best scored attempt kept. `project_spec.md` has the design for each.
 

@@ -13,6 +13,13 @@ case "$prompt" in
     ;;
 esac
 
+# Acting as the observer for a task that asks for a follow-up: propose one.
+case "$prompt" in
+  *"You are the observer"*propose-followup*)
+    echo '{"entries":[],"proposals":[{"op":"add","task":{"id":"followup","title":"Follow up","brief":"CREATE:followup.txt","verify":["sh","-c","test -f followup.txt"],"depends_on":[]}}]}'
+    exit 0 ;;
+esac
+
 # NOTE:<text> leaves a note for the team in the path the prompt names.
 note=$(printf '%s\n' "$prompt" | sed -n 's/.*NOTE:\([^ ]*\).*/\1/p' | head -1)
 if [ -n "$note" ]; then

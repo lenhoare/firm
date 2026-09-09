@@ -149,6 +149,39 @@ async fn the_controller_publishes_outcomes_and_a_later_agent_is_shown_them() {
 }
 
 #[tokio::test]
+async fn an_observer_can_change_the_plan_and_the_dispatcher_runs_the_new_task() {
+    // The bridge from shared cognition to shared execution state: something learned while
+    // working becomes work that actually gets done.
+    let mut harness = harness().await;
+    harness.config.forum_observer = "fake".into();
+    harness.config.providers[0].observer_args = Some(vec![]);
+
+    let spec = RunSpec {
+        objective: "Let what is learned change what is done".into(),
+        tasks: vec![task("propose-followup", "CREATE:first.txt", &[])],
+    };
+    let (run_id, board) = drive(&harness, spec).await;
+
+    let tasks = board.tasks(&run_id).unwrap();
+    assert_eq!(tasks.len(), 2, "the observer's task joined the graph: {tasks:?}");
+    let followup = tasks.iter().find(|t| t.id == "followup").expect("added task");
+    assert_eq!(
+        followup.state,
+        TaskState::Merged,
+        "and the dispatcher ran it like any other: {}",
+        followup.note
+    );
+
+    let proposals = board.mutations(&run_id).unwrap();
+    assert!(proposals.iter().any(|p| p["accepted"] == true && p["kind"] == "add"));
+    assert!(
+        proposals[0]["author"].as_str().unwrap().contains("observer"),
+        "recorded against the proposer: {:?}",
+        proposals[0]["author"]
+    );
+}
+
+#[tokio::test]
 async fn a_worker_can_leave_a_note_for_the_team() {
     let mut harness = harness().await;
     harness.config.forum_observer = String::new();

@@ -714,6 +714,22 @@ fn summarise(board: &v1::board::Board, run_id: &str, workspace: &Path) -> Result
             );
         }
     }
+    // A plan that changed while it ran is worth seeing, including changes that were asked
+    // for and refused.
+    let proposals = board.mutations(run_id)?;
+    if !proposals.is_empty() {
+        println!("\n  Plan changes proposed during the run:");
+        for proposal in &proposals {
+            println!(
+                "    {} {} {} — {}",
+                if proposal["accepted"] == true { "applied " } else { "refused " },
+                proposal["kind"].as_str().unwrap_or("?"),
+                proposal["target"].as_str().unwrap_or("?"),
+                proposal["reason"].as_str().unwrap_or_default()
+            );
+        }
+    }
+
     let count = |state: v1::board::TaskState| tasks.iter().filter(|t| t.state == state).count();
     let held = tasks.iter().filter(|t| !t.state.terminal()).count();
     println!(

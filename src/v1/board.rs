@@ -183,6 +183,41 @@ pub struct Run {
     pub finished_at: Option<u64>,
 }
 
+/// How many tasks a run may hold. A proposal is a spend primitive: an agent that can add
+/// work can commit the budget, so the graph cannot grow without limit.
+pub const MAX_TASKS_PER_RUN: usize = 60;
+
+/// A change to the graph, proposed by an agent or the controller and decided here.
+///
+/// Deliberately few primitives. Splitting a task is `Add` the children plus `Block` the
+/// parent; there is no separate operation, and nothing needs one yet.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum Mutation {
+    /// New work the plan did not anticipate.
+    Add { task: TaskSpec },
+    /// This task cannot proceed, and says why.
+    Block { task: String, reason: String },
+    /// This task turns out to need another's result first.
+    DependOn { task: String, on: String },
+}
+
+impl Mutation {
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::Add { .. } => "add",
+            Self::Block { .. } => "block",
+            Self::DependOn { .. } => "depend_on",
+        }
+    }
+    fn target(&self) -> String {
+        match self {
+            Self::Add { task } => task.id.clone(),
+            Self::Block { task, .. } | Self::DependOn { task, .. } => task.clone(),
+        }
+    }
+}
+
 pub struct Board {
     conn: Connection,
 }
@@ -199,7 +234,8 @@ impl Board {
             CREATE INDEX IF NOT EXISTS attempts_usage ON attempts(provider, started_at);
             CREATE TABLE IF NOT EXISTS cooldowns (provider TEXT PRIMARY KEY, until INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS usage_samples (id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, phase TEXT NOT NULL, provider TEXT NOT NULL, metric TEXT NOT NULL, label TEXT NOT NULL, value REAL NOT NULL, at INTEGER NOT NULL);
-            CREATE INDEX IF NOT EXISTS usage_run ON usage_samples(run_id, phase);",
+            CREATE INDEX IF NOT EXISTS usage_run ON usage_samples(run_id, phase);
+            CREATE TABLE IF NOT EXISTS mutations (id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, author TEXT NOT NULL, kind TEXT NOT NULL, target TEXT NOT NULL, detail TEXT NOT NULL, accepted INTEGER NOT NULL, reason TEXT NOT NULL, at INTEGER NOT NULL);",
         )?;
         // `CREATE TABLE IF NOT EXISTS` never alters an existing table, so columns added
         // after a board was created must be migrated in explicitly.
@@ -444,6 +480,158 @@ impl Board {
         Ok(())
     }
 
+    /// Decide a proposed change to the graph.
+    ///
+    /// Every proposal is recorded whether accepted or not: a rejected one is evidence about
+    /// the proposer, and silently dropping it would hide that an agent kept asking for
+    /// something the controller would never allow.
+    pub fn propose(
+        &mut self,
+        run_id: &str,
+        author: &str,
+        mutation: &Mutation,
+    ) -> Result<std::result::Result<String, String>> {
+        let verdict = self.decide(run_id, mutation);
+        let (accepted, reason) = match &verdict {
+            Ok(accepted) => (true, accepted.clone()),
+            Err(rejected) => (false, rejected.clone()),
+        };
+        self.conn.execute(
+            "INSERT INTO mutations(run_id,author,kind,target,detail,accepted,reason,at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+            params![
+                run_id,
+                author,
+                mutation.kind(),
+                mutation.target(),
+                serde_json::to_string(mutation)?,
+                accepted,
+                reason,
+                now()
+            ],
+        )?;
+        Ok(verdict)
+    }
+
+    /// Apply a mutation if it is safe. Returns why it was refused otherwise.
+    fn decide(
+        &mut self,
+        run_id: &str,
+        mutation: &Mutation,
+    ) -> std::result::Result<String, String> {
+        let tasks = self.tasks(run_id).map_err(|e| e.to_string())?;
+        let known: BTreeSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+        match mutation {
+            Mutation::Add { task } => {
+                if tasks.len() >= MAX_TASKS_PER_RUN {
+                    return Err(format!(
+                        "The run already holds {} tasks, the limit",
+                        tasks.len()
+                    ));
+                }
+                if known.contains(task.id.as_str()) {
+                    return Err(format!("A task {} already exists", task.id));
+                }
+                if task.verify.as_ref().is_none_or(|v| v.is_empty()) {
+                    return Err("A new task needs its own verify command".into());
+                }
+                for dependency in &task.depends_on {
+                    if !known.contains(dependency.as_str()) {
+                        return Err(format!("Depends on unknown task {dependency}"));
+                    }
+                }
+                // Validate the whole graph with the addition in place, so an added task
+                // cannot introduce a cycle or an invalid id.
+                let mut specs: Vec<TaskSpec> = tasks.iter().map(task_to_spec).collect();
+                specs.push(task.clone());
+                validate_graph(&RunSpec {
+                    objective: "check".into(),
+                    tasks: specs,
+                })
+                .map_err(|e| e.to_string())?;
+
+                self.conn.execute(
+                    "INSERT INTO tasks(id,run_id,title,brief,acceptance,depends_on,class,provider,verify,state) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                    params![
+                        task.id, run_id, task.title, task.brief,
+                        serde_json::to_string(&task.acceptance).unwrap_or_default(),
+                        serde_json::to_string(&task.depends_on).unwrap_or_default(),
+                        task.class, task.provider,
+                        task.verify.as_ref().map(|v| serde_json::to_string(v).unwrap_or_default()),
+                        TaskState::Open.as_str()
+                    ],
+                ).map_err(|e| e.to_string())?;
+                Ok(format!("Added {}", task.id))
+            }
+            Mutation::Block { task, reason } => {
+                let Some(existing) = tasks.iter().find(|t| &t.id == task) else {
+                    return Err(format!("Unknown task {task}"));
+                };
+                if existing.state.terminal() {
+                    return Err(format!("{task} has already finished"));
+                }
+                self.set_state(run_id, task, TaskState::Blocked, reason)
+                    .map_err(|e| e.to_string())?;
+                Ok(format!("Blocked {task}"))
+            }
+            Mutation::DependOn { task, on } => {
+                let Some(existing) = tasks.iter().find(|t| &t.id == task) else {
+                    return Err(format!("Unknown task {task}"));
+                };
+                if !known.contains(on.as_str()) {
+                    return Err(format!("Unknown task {on}"));
+                }
+                if existing.state != TaskState::Open {
+                    return Err(format!("{task} is no longer open"));
+                }
+                let mut depends_on = existing.depends_on.clone();
+                if depends_on.contains(on) {
+                    return Err(format!("{task} already depends on {on}"));
+                }
+                depends_on.push(on.clone());
+                // Reject an edge that would make the graph unsatisfiable.
+                let mut specs: Vec<TaskSpec> = tasks.iter().map(task_to_spec).collect();
+                if let Some(spec) = specs.iter_mut().find(|s| &s.id == task) {
+                    spec.depends_on = depends_on.clone();
+                }
+                validate_graph(&RunSpec {
+                    objective: "check".into(),
+                    tasks: specs,
+                })
+                .map_err(|e| e.to_string())?;
+
+                self.conn
+                    .execute(
+                        "UPDATE tasks SET depends_on=?3 WHERE run_id=?1 AND id=?2",
+                        params![
+                            run_id,
+                            task,
+                            serde_json::to_string(&depends_on).unwrap_or_default()
+                        ],
+                    )
+                    .map_err(|e| e.to_string())?;
+                Ok(format!("{task} now waits for {on}"))
+            }
+        }
+    }
+
+    /// Every proposal made against a run, accepted or not.
+    pub fn mutations(&self, run_id: &str) -> Result<Vec<Value>> {
+        let mut query = self.conn.prepare(
+            "SELECT author,kind,target,accepted,reason,at FROM mutations WHERE run_id=?1 ORDER BY at",
+        )?;
+        let rows = query.query_map([run_id], |r| {
+            Ok(serde_json::json!({
+                "author": r.get::<_, String>(0)?,
+                "kind": r.get::<_, String>(1)?,
+                "target": r.get::<_, String>(2)?,
+                "accepted": r.get::<_, bool>(3)?,
+                "reason": r.get::<_, String>(4)?,
+                "at": r.get::<_, u64>(5)?,
+            }))
+        })?;
+        rows.map(|r| r.map_err(anyhow::Error::from)).collect()
+    }
+
     /// Store raw readings rather than differences, so later analysis can ask questions we
     /// have not thought of yet.
     pub fn record_usage(
@@ -547,6 +735,20 @@ impl Board {
                 r.get::<_, String>(0)
             })
             .optional()?)
+    }
+}
+
+/// A stored task back in authoring form, for revalidating the graph after a change.
+fn task_to_spec(task: &Task) -> TaskSpec {
+    TaskSpec {
+        id: task.id.clone(),
+        title: task.title.clone(),
+        brief: task.brief.clone(),
+        acceptance: task.acceptance.clone(),
+        depends_on: task.depends_on.clone(),
+        class: task.class.clone(),
+        provider: task.provider.clone(),
+        verify: task.verify.clone(),
     }
 }
 
@@ -735,6 +937,78 @@ mod tests {
         let c = board.tasks(run).unwrap().into_iter().find(|t| t.id == "c").unwrap();
         assert_eq!(c.state, TaskState::Blocked);
         assert_eq!(board.tasks(run).unwrap()[0].attempts, 1);
+    }
+
+    fn added(id: &str, depends_on: &[&str]) -> TaskSpec {
+        let mut spec = task(id, depends_on);
+        spec.verify = Some(vec!["true".into()]);
+        spec
+    }
+
+    #[test]
+    fn a_proposal_can_extend_the_graph_and_the_dispatcher_sees_it() {
+        let (_dir, mut board) = board();
+        let run = "run-1";
+        board.create_run(run, &spec(vec![task("a", &[])]), "abc", "firm/run").unwrap();
+
+        // Work the plan did not anticipate, discovered while running.
+        let outcome = board
+            .propose(run, "grok", &Mutation::Add { task: added("b", &["a"]) })
+            .unwrap();
+        assert!(outcome.is_ok(), "{outcome:?}");
+        assert_eq!(board.tasks(run).unwrap().len(), 2);
+
+        // It is not ready until its dependency has merged — the same rule as any task.
+        assert_eq!(board.ready(run).unwrap().len(), 1, "only a is ready");
+        board.set_state(run, "a", TaskState::Merged, "").unwrap();
+        let ready: Vec<String> = board.ready(run).unwrap().into_iter().map(|t| t.id).collect();
+        assert_eq!(ready, ["b"], "the added task is dispatched like any other");
+    }
+
+    #[test]
+    fn proposals_that_would_break_the_graph_are_refused() {
+        let (_dir, mut board) = board();
+        let run = "run-1";
+        board
+            .create_run(run, &spec(vec![task("a", &[]), task("b", &["a"])]), "abc", "firm/run")
+            .unwrap();
+        let refuse = |board: &mut Board, m: Mutation| board.propose(run, "grok", &m).unwrap().unwrap_err();
+
+        assert!(refuse(&mut board, Mutation::Add { task: added("a", &[]) }).contains("already exists"));
+        assert!(refuse(&mut board, Mutation::Add { task: added("c", &["nope"]) }).contains("unknown task"));
+        // A task nothing can judge is worse than no task.
+        assert!(refuse(&mut board, Mutation::Add { task: task("c", &[]) }).contains("verify"));
+        // A cycle would make the run unfinishable.
+        assert!(refuse(&mut board, Mutation::DependOn { task: "a".into(), on: "b".into() }).contains("cycle"));
+        assert!(refuse(&mut board, Mutation::DependOn { task: "a".into(), on: "ghost".into() }).contains("Unknown"));
+        assert!(refuse(&mut board, Mutation::Block { task: "ghost".into(), reason: "x".into() }).contains("Unknown"));
+
+        // Finished work is not revised.
+        board.set_state(run, "a", TaskState::Merged, "").unwrap();
+        assert!(refuse(&mut board, Mutation::Block { task: "a".into(), reason: "too late".into() }).contains("already finished"));
+
+        // Every refusal is on the record, not silently dropped.
+        let proposals = board.mutations(run).unwrap();
+        assert_eq!(proposals.len(), 7);
+        assert!(proposals.iter().all(|p| p["accepted"] == false));
+        assert!(proposals.iter().all(|p| p["author"] == "grok"));
+    }
+
+    #[test]
+    fn the_graph_cannot_grow_without_limit() {
+        // A proposal commits budget, so an agent that keeps adding work must hit a wall.
+        let (_dir, mut board) = board();
+        let run = "run-1";
+        board.create_run(run, &spec(vec![task("seed", &[])]), "abc", "firm/run").unwrap();
+        let mut accepted = 1;
+        for index in 0..MAX_TASKS_PER_RUN + 5 {
+            let proposal = Mutation::Add { task: added(&format!("t{index}"), &[]) };
+            if board.propose(run, "grok", &proposal).unwrap().is_ok() {
+                accepted += 1;
+            }
+        }
+        assert_eq!(accepted, MAX_TASKS_PER_RUN, "capped at the limit");
+        assert_eq!(board.tasks(run).unwrap().len(), MAX_TASKS_PER_RUN);
     }
 
     #[test]
