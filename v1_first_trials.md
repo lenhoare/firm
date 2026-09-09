@@ -161,7 +161,56 @@ Separately, muse solved a *fair* ambiguity first time — a brief saying "the su
 values" where the tests pin bytes rather than chars — by reading the tests instead of the
 brief. Checks matter more than prose.
 
+## The messy trial — a project that does not partition
+
+The prediction in `project_spec.md` was that decomposition quality tracks how well the test
+suite partitions, and that where no seam exists the planner should make creating one the
+first task. `workspaces/messy-trial` was built to test it: three interdependent modules
+(parse feeds summarise feeds render) and a single `tests/acceptance.rs` in which every test
+exercises the whole pipeline. There is no per-module seam to find.
+
+From the brief "Make the acceptance tests pass", the planner produced seven tasks:
+
+```
+test-parse   test-report   test-render        (parallel, no dependencies)
+        |            |            |
+impl-parse   impl-summarise  impl-render      (each after its own test task)
+        \            |            /
+              pass-acceptance                 (after all three)
+```
+
+It built the seams first. Unprompted, it also gave the seam tasks `--no-run` checks, which
+verify the test target compiles without requiring the implementation to exist — a sound
+check for "add a test file", and a distinction nothing in the prompt asked for.
+
+The run merged all seven: three test targets in parallel, three implementations in
+parallel, then integration. Verified independently: no stubs remain and eleven tests pass
+across four targets.
+
+### It also found a real bug
+
+The first attempt failed. `pass-acceptance` had nothing to do — the three implementations
+had already satisfied its check — so the agent correctly changed nothing, and the
+controller rejected it for changing nothing. **A task whose dependencies have already
+satisfied it was impossible to complete.**
+
+This is the same principle failing for the third time. Verification once overwrote the
+native exit code; an agent that hung after finishing was nearly discarded; and here a diff
+was again used as a proxy for a verdict. The check decides.
+
+The fix is narrower than "run the check anyway", because three existing tests then broke —
+correctly. They use a weak run-level sentinel that passes vacuously when an agent does
+nothing, and one of them had exited non-zero. Merging on that would hide real failures. So
+"nothing needed doing" is accepted only when the task has **its own scoped check** and the
+agent **exited cleanly**: only a check written for this task can establish that this task's
+goal is already met, and a catch-all check passing says little about any one task.
+
+Re-run after the fix: seven merged, `pass-acceptance` recorded as "Nothing needed changing;
+the check already passes", whole-project check passed.
+
 ## Not yet tested
 
 Merge conflicts between concurrent attempts on the same files; compete mode; whether
-observer entries are ever read by an agent that would otherwise have gone wrong.
+observer entries are ever read by an agent that would otherwise have gone wrong; and
+whether agent-written test seams are strong enough to be worth judging work by — in the
+messy trial the same team wrote both the tests and the code that had to pass them.

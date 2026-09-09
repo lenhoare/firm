@@ -651,6 +651,29 @@ impl Board {
         Ok(())
     }
 
+    /// What a run consumed: differences between the before and after readings, plus any
+    /// figure recorded by hand. Codex reports through app-server, which a board run does
+    /// not hold open, so its cost is entered manually from what the operator can see.
+    pub fn usage_consumed(&self, run_id: &str) -> Result<Vec<super::usage::Sample>> {
+        let read = |phase: &str| -> Result<Vec<super::usage::Sample>> {
+            let mut query = self.conn.prepare(
+                "SELECT provider,metric,label,value FROM usage_samples WHERE run_id=?1 AND phase=?2",
+            )?;
+            let rows = query.query_map(params![run_id, phase], |r| {
+                Ok(super::usage::Sample {
+                    provider: r.get(0)?,
+                    metric: r.get(1)?,
+                    label: r.get(2)?,
+                    value: r.get(3)?,
+                })
+            })?;
+            rows.map(|r| r.map_err(anyhow::Error::from)).collect()
+        };
+        let mut consumed = super::usage::consumed(&read("before")?, &read("after")?);
+        consumed.extend(read("manual")?);
+        Ok(consumed)
+    }
+
     /// Keep what the observer actually replied, so a silent observer can be diagnosed.
     pub fn set_observation(&mut self, attempt_id: &str, reply: &str) -> Result<()> {
         self.conn.execute(

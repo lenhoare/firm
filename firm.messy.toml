@@ -1,0 +1,91 @@
+# Live runs use the existing Codex subscription and configured worker CLI logins.
+# Demo mode is the default; nothing starts until you press Start.
+listen = "127.0.0.1:7433"
+state_dir = ".firm"
+workspace = "workspaces/messy-trial"
+codex_url = "ws://127.0.0.1:4500"
+codex_model = "gpt-6-astra"
+verify_command = ["cargo", "test", "--offline"]
+meeting_order = ["grok", "muse", "qwen", "codex"]
+
+# Commands run directly (not through a shell). Add more [[providers]] blocks to expand.
+# Local per-provider caps share the overall worker_runs allowance below.
+[[providers]]
+id = "codex"
+planner_args = ["exec", "--model", "{codex_model}", "--sandbox", "read-only", "--skip-git-repo-check", "--color", "never", "--cd", "{workspace}", "-"]
+worker = false
+tier = 2
+max_concurrent = 1
+name = "Codex · Astra"
+command = "codex"
+enabled = true
+max_runs = 6
+description = "First-choice design and engineering specialist. Use early for architecture, constraints and decomposition, then for difficult implementation where its strengths matter."
+input = "stdin"
+# This is the same installed Codex and subscription login as the manager, invoked in worker mode.
+args = ["exec", "--model", "{codex_model}", "--sandbox", "workspace-write", "--approve-for-me", "--skip-git-repo-check", "--ephemeral", "--color", "never", "--cd", "{workspace}", "-"]
+
+[[providers]]
+id = "grok"
+planner_args = ["--prompt-file", "{prompt_file}", "--cwd", "{workspace}", "--no-subagents", "--disable-web-search", "--tools", "list_dir,read_file,grep", "--max-turns", "40"]
+worker_timeout_seconds = 300
+idle_timeout_seconds = 60
+observer_args = ["--prompt-file", "{prompt_file}", "--cwd", "{workspace}", "--no-subagents", "--disable-web-search", "--tools", "", "--max-turns", "2", "--json-schema", "{\"type\":\"object\",\"properties\":{\"entries\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"kind\":{\"type\":\"string\"},\"title\":{\"type\":\"string\"},\"body\":{\"type\":\"string\"}},\"required\":[\"kind\",\"title\"]}}},\"required\":[\"entries\"]}"]
+tier = 1
+max_concurrent = 2
+manager_args = ["--prompt-file", "{prompt_file}", "--cwd", "{workspace}", "--output-format", "plain", "--permission-mode", "plan", "--no-subagents", "--disable-web-search", "--max-turns", "{max_turns}"]
+meeting_args = ["--prompt-file", "{prompt_file}", "--cwd", "{workspace}", "--output-format", "plain", "--permission-mode", "plan", "--no-subagents", "--disable-web-search", "--max-turns", "{max_turns}"]
+name = "Grok"
+command = "grok"
+enabled = true
+max_runs = 40
+description = "Default coordinator and capable coding worker; use for implementation or an independent perspective. Turns are capped; no CLI tool-call count cap."
+input = "prompt_file"
+# Worker-only unattended permissions. Keep manager/meeting invocations read-only.
+# Do not authorize the inherited personal Telegram integration for coding tasks.
+args = ["--prompt-file", "{prompt_file}", "--cwd", "{workspace}", "--output-format", "streaming-json", "--permission-mode", "bypassPermissions", "--deny", "MCPTool(telegram__*)", "--no-subagents", "--max-turns", "{max_turns}"]
+
+
+[[providers]]
+id = "qwen"
+tier = 1
+max_concurrent = 2
+manager_args = ["--prompt", "Return the manager decision requested on stdin as JSON only.", "--output-format", "text", "--approval-mode", "plan", "--bare", "--max-session-turns", "{max_turns}", "--max-tool-calls", "0", "--max-wall-time", "{timeout_seconds}s"]
+meeting_args = ["--prompt", "Discuss the question supplied on stdin.", "--output-format", "text", "--approval-mode", "plan", "--bare", "--max-session-turns", "{max_turns}", "--max-tool-calls", "0", "--max-wall-time", "{timeout_seconds}s"]
+name = "Qwen"
+command = "qwen"
+enabled = false
+max_runs = 6
+description = "General-purpose coding worker;"
+input = "stdin"
+args = ["--prompt", "Carry out the assignment supplied on stdin.", "--output-format", "text", "--approval-mode", "yolo", "--max-session-turns", "{max_turns}", "--max-tool-calls", "{max_tool_calls}", "--max-wall-time", "{timeout_seconds}s"]
+
+[[providers]]
+id = "muse"
+worker_timeout_seconds = 900
+idle_timeout_seconds = 120
+tier = 0
+max_concurrent = 3
+manager_args = ["exec", "--prompt-file", "{prompt_file}", "--workspace", "{workspace}", "--approval-mode", "never", "--approval-judge", "off", "--disable-write", "--disable-shell", "--disable-web-tools", "--no-foreign-personal-context", "--max-model-steps", "{max_turns}"]
+meeting_args = ["exec", "--prompt-file", "{prompt_file}", "--workspace", "{workspace}", "--approval-mode", "never", "--approval-judge", "off", "--disable-write", "--disable-shell", "--disable-web-tools", "--no-foreign-personal-context", "--max-model-steps", "{max_turns}"]
+name = "Muse"
+command = "muse"
+enabled = true
+max_runs = 40
+description = "Alternative coding worker; use for implementation or an independent perspective. Model steps are capped; no CLI tool-call count cap."
+input = "prompt_file"
+args = ["exec", "--prompt-file", "{prompt_file}", "--workspace", "{workspace}", "--approval-mode", "never", "--approval-judge", "off", "--disable-sandbox", "--json", "--max-model-steps", "{max_turns}"]
+
+[allowances]
+manager_turns = 4
+worker_runs = 60
+window_seconds = 18000
+manager_interval_seconds = 300
+max_turn_seconds = 300
+worker_timeout_seconds = 900
+idle_timeout_seconds = 120
+worker_max_turns = 64
+worker_max_tool_calls = 64
+max_used_percent = 50.0
+usage_max_age_seconds = 90
+provider_cooldown_seconds = 900

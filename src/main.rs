@@ -18,7 +18,7 @@ async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() || args.iter().any(|a| a == "--help" || a == "-h") {
         println!(
-            "Firm 0.1 — experimental agent team\n\n  firm serve [--live] [--config PATH]\n  firm probe [--config PATH]\n  firm plan --brief BRIEF.md [--out tasks.json] [--config PATH]\n  firm board --tasks PATH [--live] [--config PATH]\n  firm board [--watch | --forum | --retire ID | --prune] [--config PATH]\n\nBoard runs the v1 engine: several agents work in parallel on a task graph, each in its\nown git worktree; only work passing verify_command is merged. The workspace must be a\nclean git repository and your own branch is never modified.\n\nDefault: demo mode, localhost:7433, firm.toml.\nProbe reads Codex login type and rate limits; it never starts a model turn.\nLive mode uses your existing Codex subscription and configured worker CLI logins.\nStart app-server separately: codex app-server --listen ws://127.0.0.1:4500"
+            "Firm 0.1 — experimental agent team\n\n  firm serve [--live] [--config PATH]\n  firm probe [--config PATH]\n  firm usage --provider ID (--percent N | --tokens N) [--label TEXT] [--run ID]\n  firm plan --brief BRIEF.md [--out tasks.json] [--config PATH]\n  firm board --tasks PATH [--live] [--config PATH]\n  firm board [--watch | --forum | --retire ID | --prune] [--config PATH]\n\nBoard runs the v1 engine: several agents work in parallel on a task graph, each in its\nown git worktree; only work passing verify_command is merged. The workspace must be a\nclean git repository and your own branch is never modified.\n\nDefault: demo mode, localhost:7433, firm.toml.\nProbe reads Codex login type and rate limits; it never starts a model turn.\nLive mode uses your existing Codex subscription and configured worker CLI logins.\nStart app-server separately: codex app-server --listen ws://127.0.0.1:4500"
         );
         return Ok(());
     }
@@ -31,6 +31,11 @@ async fn main() -> Result<()> {
     let mut prune = false;
     let mut brief_path: Option<&str> = None;
     let mut out_path: Option<&str> = None;
+    let mut provider: Option<&str> = None;
+    let mut percent: Option<f64> = None;
+    let mut tokens: Option<f64> = None;
+    let mut label: Option<&str> = None;
+    let mut run: Option<&str> = None;
     let mut index = 1;
     while index < args.len() {
         match args[index].as_str() {
@@ -46,6 +51,26 @@ async fn main() -> Result<()> {
             "--watch" => watch = true,
             "--forum" => forum = true,
             "--prune" => prune = true,
+            "--provider" => {
+                index += 1;
+                provider = Some(args.get(index).context("Missing provider id")?);
+            }
+            "--percent" => {
+                index += 1;
+                percent = args.get(index).context("Missing percentage")?.parse().ok();
+            }
+            "--tokens" => {
+                index += 1;
+                tokens = args.get(index).context("Missing token count")?.parse().ok();
+            }
+            "--label" => {
+                index += 1;
+                label = Some(args.get(index).context("Missing label")?);
+            }
+            "--run" => {
+                index += 1;
+                run = Some(args.get(index).context("Missing run id")?);
+            }
             "--brief" => {
                 index += 1;
                 brief_path = Some(args.get(index).context("Missing brief path")?);
@@ -63,6 +88,9 @@ async fn main() -> Result<()> {
         index += 1;
     }
     let config = Config::read(Path::new(config_path))?;
+    if args[0] == "usage" {
+        return record_usage(config, live, provider, percent, tokens, label, run);
+    }
     if args[0] == "plan" {
         return plan(config, brief_path, out_path, live).await;
     }
@@ -411,6 +439,49 @@ async fn board(
     Ok(())
 }
 
+/// Record a cost figure observed by hand.
+///
+/// Some providers cannot be probed from a board run — Codex reports through app-server,
+/// which a run does not hold open — so what the operator can see is entered directly and
+/// stored alongside the sampled readings.
+fn record_usage(
+    config: Config,
+    live: bool,
+    provider: Option<&str>,
+    percent: Option<f64>,
+    tokens: Option<f64>,
+    label: Option<&str>,
+    run: Option<&str>,
+) -> Result<()> {
+    let provider = provider.context("firm usage requires --provider ID")?;
+    let (metric, value) = match (percent, tokens) {
+        (Some(percent), None) => ("percent", percent),
+        (None, Some(tokens)) => ("tokens", tokens),
+        _ => bail!("Give exactly one of --percent or --tokens"),
+    };
+    let board_path = v1::dispatch::board_path(&config.state_dir, live);
+    let mut board = v1::board::Board::open(&board_path)?;
+    let run_id = match run {
+        Some(id) => id.to_string(),
+        None => board
+            .latest_run()?
+            .context("No runs yet; give --run ID to attribute this to one")?,
+    };
+    let sample = v1::usage::Sample {
+        provider: provider.to_string(),
+        metric: metric.to_string(),
+        label: label.unwrap_or("observed by hand").to_string(),
+        value,
+    };
+    board.record_usage(&run_id, "manual", std::slice::from_ref(&sample))?;
+    println!(
+        "Recorded against run {}: {}",
+        &run_id[..8.min(run_id.len())],
+        v1::usage::describe(&sample)
+    );
+    Ok(())
+}
+
 /// Turn a written brief into a task graph for review.
 ///
 /// One planning call, then a person reads the result before anything runs. The graph is
@@ -728,6 +799,14 @@ fn summarise(board: &v1::board::Board, run_id: &str, workspace: &Path) -> Result
                 proposal["reason"].as_str().unwrap_or_default()
             );
         }
+    }
+
+    let consumed = board.usage_consumed(run_id).unwrap_or_default();
+    if !consumed.is_empty() {
+        println!(
+            "\n  Consumed: {}",
+            consumed.iter().map(v1::usage::describe).collect::<Vec<_>>().join(" · ")
+        );
     }
 
     let count = |state: v1::board::TaskState| tasks.iter().filter(|t| t.state == state).count();

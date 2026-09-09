@@ -538,20 +538,47 @@ impl Engine {
             .commit(&format!("firm: {} ({})", task.id, provider.id))
             .await?;
         record.files_changed = workspace.files_changed().await?;
+        // A task scoped to work that its dependencies already completed has nothing to do,
+        // and an agent that correctly does nothing must not be failed for it. The check
+        // decides, here as everywhere; changing no files is only a rejection when the work
+        // is genuinely absent.
+        let scorer = self.task_scorer(task);
         if !changed {
-            record.state = AttemptState::Rejected;
-            record.passed = Some(false);
-            record.detail = match (result.exit_code, &result.interruption) {
-                (_, Some(reason)) => format!("Agent was interrupted ({reason}) and changed no files"),
-                (Some(0), _) => "Agent changed no files".into(),
-                (code, _) => format!("Agent exited {code:?} and changed no files"),
+            // Only a check written for *this* task can establish that its goal is already
+            // met. The run-level check is a catch-all: passing it says little about one
+            // task, and an agent that exited badly is not evidence of anything.
+            let scoped = task.verify.as_ref().is_some_and(|v| !v.is_empty());
+            let clean_exit = result.exit_code == Some(0) && result.interruption.is_none();
+            let verdict = if scoped && clean_exit {
+                scorer.score(&workspace.path, self.cancel.clone()).await?
+            } else {
+                super::scorer::Verdict {
+                    passed: false,
+                    score: None,
+                    detail: String::new(),
+                }
             };
+            record.passed = Some(verdict.passed);
+            record.score = verdict.score;
+            if verdict.passed {
+                record.state = AttemptState::Verified;
+                record.detail = "Nothing needed changing; the check already passes".into();
+            } else {
+                record.state = AttemptState::Rejected;
+                record.detail = match (result.exit_code, &result.interruption) {
+                    (_, Some(reason)) => {
+                        format!("Agent was interrupted ({reason}) and changed no files")
+                    }
+                    (Some(0), _) => format!("Agent changed no files. {}", verdict.detail),
+                    (code, _) => format!("Agent exited {code:?} and changed no files"),
+                };
+            }
+            // Nothing was committed, so there is nothing to merge.
             return Ok(());
         }
 
         // A task-scoped check where one is given, so focused work is not judged by
         // failures belonging to tasks that have not been done yet.
-        let scorer = self.task_scorer(task);
         let verdict = scorer.score(&workspace.path, self.cancel.clone()).await?;
         record.passed = Some(verdict.passed);
         record.score = verdict.score;

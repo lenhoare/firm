@@ -182,6 +182,40 @@ async fn an_observer_can_change_the_plan_and_the_dispatcher_runs_the_new_task() 
 }
 
 #[tokio::test]
+async fn a_task_its_dependencies_already_satisfied_is_not_failed_for_doing_nothing() {
+    // Found in a live trial: a final integration task had nothing to do, because the tasks
+    // it depended on had already satisfied its check. The agent correctly changed nothing
+    // and was failed for it. The check decides, not the diff.
+    let mut harness = harness().await;
+    harness.config.forum_observer = String::new();
+    let mut first = task("does-the-work", "CREATE:done.txt", &[]);
+    first.verify = Some(vec!["sh".into(), "-c".into(), "test -f done.txt".into()]);
+    // Nothing for this one to do: its check already passes once the first has merged.
+    let mut second = task("nothing-to-do", "The work is already done.", &["does-the-work"]);
+    second.verify = Some(vec!["sh".into(), "-c".into(), "test -f done.txt".into()]);
+
+    let spec = RunSpec {
+        objective: "A task with nothing left to do".into(),
+        tasks: vec![first, second],
+    };
+    let (run_id, board) = drive(&harness, spec).await;
+
+    let tasks = board.tasks(&run_id).unwrap();
+    for task in &tasks {
+        assert_eq!(task.state, TaskState::Merged, "{} — {}", task.id, task.note);
+    }
+    let attempts = board.attempts(&run_id).unwrap();
+    let quiet = attempts.iter().find(|a| a["task_id"] == "nothing-to-do").unwrap();
+    assert_eq!(quiet["passed"], true);
+    assert_eq!(quiet["files_changed"].as_array().unwrap().len(), 0);
+    assert!(
+        quiet["detail"].as_str().unwrap().contains("already passes"),
+        "{:?}",
+        quiet["detail"]
+    );
+}
+
+#[tokio::test]
 async fn a_worker_can_leave_a_note_for_the_team() {
     let mut harness = harness().await;
     harness.config.forum_observer = String::new();
