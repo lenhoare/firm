@@ -48,6 +48,8 @@ args = ["--prompt-file", "{prompt_file}", "--cwd", "{workspace}", "--output-form
 
 [[providers]]
 id = "qwen"
+worker_timeout_seconds = 900
+idle_timeout_seconds = 120
 tier = 1
 max_concurrent = 2
 manager_args = ["--prompt", "Return the manager decision requested on stdin as JSON only.", "--output-format", "text", "--approval-mode", "plan", "--bare", "--max-session-turns", "{max_turns}", "--max-tool-calls", "0", "--max-wall-time", "{timeout_seconds}s"]
@@ -58,7 +60,7 @@ enabled = true
 max_runs = 6
 description = "General-purpose coding worker;"
 input = "stdin"
-args = ["--prompt", "Carry out the assignment supplied on stdin.", "--output-format", "text", "--approval-mode", "yolo", "--max-session-turns", "{max_turns}", "--max-tool-calls", "{max_tool_calls}", "--max-wall-time", "{timeout_seconds}s"]
+args = ["--prompt", "Carry out the assignment supplied on stdin.", "--output-format", "stream-json", "--approval-mode", "yolo", "--max-session-turns", "{max_turns}", "--max-tool-calls", "{max_tool_calls}", "--max-wall-time", "{timeout_seconds}s"]
 
 [[providers]]
 id = "muse"

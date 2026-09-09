@@ -208,6 +208,33 @@ goal is already met, and a catch-all check passing says little about any one tas
 Re-run after the fix: seven merged, `pass-acceptance` recorded as "Nothing needed changing;
 the check already passes", whole-project check passed.
 
+## The ledger as a personal benchmark
+
+Because every attempt is recorded with its provider, outcome and duration, the ledger has
+become a benchmark on this project's own work rather than a public leaderboard: real tasks,
+this machine, this definition of acceptable. `firm board --stats` reads it.
+
+After adding qwen as a third worker, on 82 attempts:
+
+```
+grok      22 attempts   91% accepted  median 37s
+muse      58 attempts   97% accepted  median 82s
+qwen       2 attempts  100% accepted  median 163s   (too few to judge)
+```
+
+Grok is roughly twice as fast as muse and slightly less reliable. Muse's median is dragged
+by genuine outliers — one `impl-roman` took 7m22s while its own median is 82s — which is
+why the median, not the mean, is what routing reads.
+
+Qwen was added and worked first time: two tasks, both accepted, no sandbox trouble, because
+its sandbox is opt-in where muse's was on by default. It is at tier 0 on the assumption that
+it is cheap; that is a judgement about price, not something measured, and its weekly
+40,000-token allowance is small enough to exhaust quickly.
+
+Worth remembering what these numbers are not. They are pooled across task types, on one
+small Rust codebase, with tasks this same system planned. They say which provider tends to
+get *this* kind of work accepted here — not which model is better.
+
 ## Not yet tested
 
 Merge conflicts between concurrent attempts on the same files; compete mode; whether
