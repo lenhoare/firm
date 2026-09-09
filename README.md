@@ -128,11 +128,14 @@ anything runs — the human checkpoint is that file. Graphs can still be hand-au
   `worker_timeout_seconds` and `idle_timeout_seconds`, falling back to the run's
   allowances. Grok reliably finishes in well under a minute; muse ranges from 30s to
   several minutes and has hung outright, so one global limit was too crude for both.
-- **A long run is safe to stop.** Ctrl+C cancels the agents and prints the command to
-  continue. Everything already merged is a commit on the run's branch, so nothing is lost,
-  and `--resume` picks the same run up on the same branch: finished tasks are not redone,
-  and work caught mid-flight returns to the queue rather than being left stranded. A hard
-  kill is handled the same way, reconciled when the run is next opened.
+- **A long run is safe to stop at any moment.** Ctrl+C cancels the agents and prints the
+  command to continue. Everything already merged is a commit on the run's branch, and an
+  agent killed part-way through still has what it had written committed to its own attempt
+  branch, which is kept — so a pause destroys nothing, even mid-task. `--resume` picks the
+  same run up on the same branch: finished tasks are not redone, interrupted ones return to
+  the queue and start again cleanly, and any salvaged partial work is listed so you can
+  cherry-pick it if it was worth having. A hard kill is handled the same way, reconciled
+  when the run is next opened.
 - Each run leaves a checked-out integration worktree, around 48 MiB for a small Rust
   crate. `--prune` removes those of finished runs, keeping the most recent; every run's
   work stays on its `firm/run-<id>` branch regardless.

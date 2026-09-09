@@ -456,6 +456,12 @@ lands incrementally and everything merged is a commit on the run's branch. Resum
 Every run minted a fresh run id and branch, so a stopped run could not be continued — the
 work survived, but only by starting again and redoing it.
 
+Pausing mid-task destroys nothing. An agent killed part-way has what it had already written
+committed to its attempt branch before the interruption is recorded, and attempt branches
+outlive their worktrees. The work is not reused automatically — a half-finished attempt is
+a poor starting point, and the task starts again cleanly — but `--resume` lists it so it can
+be inspected or cherry-picked.
+
 `--resume` continues a run on its own branch. Reconciliation on open returns any task left
 `running` to the queue and closes its attempt as interrupted, which also keeps the ledger
 honest: an attempt that never finished is not evidence about a provider. v0 had this

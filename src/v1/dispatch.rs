@@ -462,7 +462,18 @@ impl Engine {
         record.finished_at = Some(now());
         if let Err(error) = &outcome {
             record.state = AttemptState::Error;
-            record.detail = error.to_string();
+            // An agent stopped part-way may still have written something worth keeping. It
+            // was committed to this attempt's branch before the interruption, and the
+            // branch outlives the worktree — say so, or nobody will ever look.
+            record.detail = if record.files_changed.is_empty() {
+                error.to_string()
+            } else {
+                format!(
+                    "{error}. What it had written is kept on {}: {}",
+                    record.branch,
+                    record.files_changed.join(", ")
+                )
+            };
         }
         self.board.lock().await.finish_attempt(&record)?;
         self.emit(Progress::Attempt {

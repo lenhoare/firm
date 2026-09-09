@@ -374,6 +374,64 @@ async fn a_stopped_run_resumes_without_redoing_finished_work() {
 }
 
 #[tokio::test]
+async fn pausing_mid_task_keeps_what_the_agent_had_already_written() {
+    // The operator stops everything. Agents are killed part-way through. What they had
+    // written must survive somewhere recoverable rather than being thrown away.
+    let mut harness = harness().await;
+    harness.config.forum_observer = String::new();
+    let script = harness.config.providers[0].command.clone();
+    // Writes its file, then keeps going until it is killed.
+    std::fs::write(
+        &script,
+        "#!/bin/sh\ncat > /dev/null\necho 'partial work' > partial.txt\necho '{\"payload_type\":\"working\"}'\nsleep 300\n",
+    )
+    .unwrap();
+
+    let spec = RunSpec {
+        objective: "Stop everything mid-task".into(),
+        tasks: vec![task("interrupted", "CREATE:partial.txt", &[])],
+    };
+    let board = Board::open(&harness.board_path).unwrap();
+    let (cancel, rx) = watch::channel(0);
+    let (engine, run_id) = Engine::create(harness.config.clone(), board, scorer(), rx, &spec)
+        .await
+        .unwrap();
+    let engine = Arc::new(engine);
+
+    // Let the agent get going, then pause everything.
+    let driving = {
+        let engine = Arc::clone(&engine);
+        let run = run_id.clone();
+        tokio::spawn(async move { engine.drive(&run).await })
+    };
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    cancel.send_modify(|v| *v += 1);
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(60), driving).await;
+
+    let board = Board::open(&harness.board_path).unwrap();
+    let attempts = board.attempts(&run_id).unwrap();
+    assert_eq!(attempts.len(), 1);
+    let branch = attempts[0]["branch"].as_str().unwrap().to_string();
+
+    // The partial work is committed on the attempt's own branch, which is kept.
+    let listing = git(
+        &harness.workspace_path,
+        &["ls-tree", "-r", "--name-only", &branch],
+    )
+    .await
+    .unwrap_or_default();
+    assert!(
+        listing.contains("partial.txt"),
+        "what the agent wrote before the pause survives on {branch}:\n{listing}"
+    );
+
+    // And the task is back in the queue, not failed, so resuming picks it up.
+    let task = &board.tasks(&run_id).unwrap()[0];
+    assert_ne!(task.state, TaskState::Merged);
+    assert!(!task.state.terminal(), "left resumable, not failed: {:?}", task.state);
+}
+
+#[tokio::test]
 async fn a_worker_can_leave_a_note_for_the_team() {
     let mut harness = harness().await;
     harness.config.forum_observer = String::new();

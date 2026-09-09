@@ -783,9 +783,42 @@ async fn resume_run(
         .count();
     drop(board);
     println!(
-        "Resuming run {} — {outstanding} task(s) still outstanding.\n",
+        "Resuming run {} — {outstanding} task(s) still outstanding.",
         &run_id[..8]
     );
+    // Anything an agent had written when it was stopped is on its own branch. It is not
+    // reused automatically — a half-finished attempt is not a good starting point — but it
+    // should not disappear silently either.
+    let board = v1::board::Board::open_readonly(&board_path)?;
+    let salvage: Vec<String> = board
+        .attempts(&run_id)?
+        .iter()
+        .filter(|a| {
+            a["state"] == "error"
+                && a["files_changed"].as_array().is_some_and(|f| !f.is_empty())
+        })
+        .map(|a| {
+            format!(
+                "  {} left work on {}: {}",
+                a["task_id"].as_str().unwrap_or("?"),
+                a["branch"].as_str().unwrap_or("?"),
+                a["files_changed"]
+                    .as_array()
+                    .map(|f| f.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(", "))
+                    .unwrap_or_default()
+            )
+        })
+        .collect();
+    drop(board);
+    if !salvage.is_empty() {
+        println!(
+            "\nInterrupted attempts kept what they had written. These are not reused; the\n             tasks start again cleanly. Inspect or cherry-pick if any of it was worth having:"
+        );
+        for line in &salvage {
+            println!("{line}");
+        }
+    }
+    println!();
     if outstanding == 0 {
         println!("Nothing left to do.");
         return Ok(());
