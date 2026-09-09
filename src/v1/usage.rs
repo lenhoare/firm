@@ -6,6 +6,12 @@
 //! — Grok a weekly percentage, Qwen and Muse cumulative tokens, Codex per-window
 //! percentages — so samples are stored raw and compared later.
 //!
+//! **Not every reading is usable.** The muse and qwen probes start a fresh CLI session and
+//! ask it for usage, so they report that session's tokens rather than the account's — always
+//! near zero, and no use as a cost signal. Only a percentage of a stated window measures an
+//! account. Where no usable reading exists, record the figure by hand:
+//! `firm usage --provider codex --percent 4`.
+//!
 //! Sampled once before and once after, not per call. Reading usage costs seconds per
 //! provider, and a run that measured itself between every attempt would spend more time
 //! measuring than working.

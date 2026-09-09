@@ -230,6 +230,16 @@ impl Mutation {
     }
 }
 
+/// Everything one provider consumed, summed across runs.
+#[derive(Clone, Debug, Serialize)]
+pub struct UsageTotal {
+    pub provider: String,
+    pub metric: String,
+    pub label: String,
+    pub value: f64,
+    pub runs: usize,
+}
+
 /// One provider's observed record.
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Stats {
@@ -682,6 +692,37 @@ impl Board {
             }))
         })?;
         rows.map(|r| r.map_err(anyhow::Error::from)).collect()
+    }
+
+    /// Everything consumed across every run, per provider and metric. Percentages of a
+    /// rolling window are additive only loosely — the window moves — so they are reported
+    /// as a total consumed, not as a current level.
+    pub fn usage_totals(&self) -> Result<Vec<UsageTotal>> {
+        let runs: Vec<String> = {
+            let mut query = self.conn.prepare("SELECT id FROM runs ORDER BY created_at")?;
+            let rows = query.query_map([], |r| r.get::<_, String>(0))?;
+            rows.collect::<rusqlite::Result<Vec<String>>>()?
+        };
+        let mut totals: BTreeMap<(String, String, String), (f64, usize)> = BTreeMap::new();
+        for run in runs {
+            for sample in self.usage_consumed(&run)? {
+                let entry = totals
+                    .entry((sample.provider, sample.metric, sample.label))
+                    .or_insert((0.0, 0));
+                entry.0 += sample.value;
+                entry.1 += 1;
+            }
+        }
+        Ok(totals
+            .into_iter()
+            .map(|((provider, metric, label), (value, runs))| UsageTotal {
+                provider,
+                metric,
+                label,
+                value,
+                runs,
+            })
+            .collect())
     }
 
     /// What each provider has actually done, from the attempts ledger. This is the

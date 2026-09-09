@@ -18,7 +18,7 @@ async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() || args.iter().any(|a| a == "--help" || a == "-h") {
         println!(
-            "Firm 0.1 — experimental agent team\n\n  firm serve [--live] [--config PATH]\n  firm probe [--config PATH]\n  firm usage --provider ID (--percent N | --tokens N) [--label TEXT] [--run ID]\n  firm plan --brief BRIEF.md [--out tasks.json] [--config PATH]\n  firm board --tasks PATH [--live] [--config PATH]\n  firm board [--watch | --forum | --retire ID | --prune | --stats] [--config PATH]\n  firm board --tasks PATH --provider ID   (force one provider, for comparisons)\n\nBoard runs the v1 engine: several agents work in parallel on a task graph, each in its\nown git worktree; only work passing verify_command is merged. The workspace must be a\nclean git repository and your own branch is never modified.\n\nDefault: demo mode, localhost:7433, firm.toml.\nProbe reads Codex login type and rate limits; it never starts a model turn.\nLive mode uses your existing Codex subscription and configured worker CLI logins.\nStart app-server separately: codex app-server --listen ws://127.0.0.1:4500"
+            "Firm 0.1 — experimental agent team\n\n  firm serve [--live] [--config PATH]\n  firm probe [--config PATH]\n  firm usage                                 (what has been spent, and current allowances)\n  firm usage --provider ID (--percent N | --tokens N) [--label TEXT] [--run ID]\n  firm plan --brief BRIEF.md [--out tasks.json] [--config PATH]\n  firm board --tasks PATH [--live] [--config PATH]\n  firm board [--watch | --forum | --retire ID | --prune | --stats] [--config PATH]\n  firm board --tasks PATH --provider ID   (force one provider, for comparisons)\n\nBoard runs the v1 engine: several agents work in parallel on a task graph, each in its\nown git worktree; only work passing verify_command is merged. The workspace must be a\nclean git repository and your own branch is never modified.\n\nDefault: demo mode, localhost:7433, firm.toml.\nProbe reads Codex login type and rate limits; it never starts a model turn.\nLive mode uses your existing Codex subscription and configured worker CLI logins.\nStart app-server separately: codex app-server --listen ws://127.0.0.1:4500"
         );
         return Ok(());
     }
@@ -91,7 +91,7 @@ async fn main() -> Result<()> {
     }
     let config = Config::read(Path::new(config_path))?;
     if args[0] == "usage" {
-        return record_usage(config, live, provider, percent, tokens, label, run);
+        return usage_command(config, live, provider, percent, tokens, label, run).await;
     }
     if args[0] == "plan" {
         return plan(config, brief_path, out_path, live).await;
@@ -506,7 +506,7 @@ async fn board(config: Config, options: BoardOptions<'_>) -> Result<()> {
 /// Some providers cannot be probed from a board run — Codex reports through app-server,
 /// which a run does not hold open — so what the operator can see is entered directly and
 /// stored alongside the sampled readings.
-fn record_usage(
+async fn usage_command(
     config: Config,
     live: bool,
     provider: Option<&str>,
@@ -515,7 +515,11 @@ fn record_usage(
     label: Option<&str>,
     run: Option<&str>,
 ) -> Result<()> {
-    let provider = provider.context("firm usage requires --provider ID")?;
+    // With nothing to record, report instead: what has been spent, and where things stand.
+    if percent.is_none() && tokens.is_none() {
+        return show_usage(&config, live).await;
+    }
+    let provider = provider.context("Recording a figure requires --provider ID")?;
     let (metric, value) = match (percent, tokens) {
         (Some(percent), None) => ("percent", percent),
         (None, Some(tokens)) => ("tokens", tokens),
@@ -541,6 +545,72 @@ fn record_usage(
         &run_id[..8.min(run_id.len())],
         v1::usage::describe(&sample)
     );
+    Ok(())
+}
+
+/// What has been spent, and what each provider reports right now.
+async fn show_usage(config: &Config, live: bool) -> Result<()> {
+    let board_path = v1::dispatch::board_path(&config.state_dir, live);
+    if let Ok(board) = v1::board::Board::open_readonly(&board_path) {
+        let totals = board.usage_totals().unwrap_or_default();
+        println!("Consumed across all recorded runs:\n");
+        if totals.is_empty() {
+            println!("  Nothing recorded yet.");
+        }
+        for total in totals {
+            if total.metric == "percent" {
+                println!(
+                    "  {:<8} {:>8.1}% of {}   over {} run(s)",
+                    total.provider, total.value, total.label, total.runs
+                );
+            } else {
+                println!(
+                    "  {:<8} {:>8} tokens   over {} run(s)",
+                    total.provider, total.value as u64, total.runs
+                );
+            }
+        }
+    }
+
+    // A reading costs seconds per provider, so say what is happening rather than appearing
+    // to hang.
+    println!("\nReading each provider's current allowance (this takes a few seconds)...");
+    let now = v1::usage::sample(config).await;
+    println!();
+    if now.is_empty() {
+        println!("  No provider reported a reading.");
+    }
+    for sample in &now {
+        if sample.metric == "percent" {
+            println!(
+                "  {:<8} {:>8.1}% of {} used",
+                sample.provider, sample.value, sample.label
+            );
+        } else {
+            // These probes start a fresh CLI session and ask it for its usage, so the
+            // figure describes that session, not the account. Reported, but not trusted.
+            println!(
+                "  {:<8} {:>8} tokens in a fresh session — not an account total",
+                sample.provider, sample.value as u64
+            );
+        }
+    }
+    println!(
+        "\n  Only a percentage-of-window reading measures an account. Token counts above come"
+    );
+    println!("  from a newly started session and cannot show what a run cost.");
+    let unreadable: Vec<&str> = config
+        .providers
+        .iter()
+        .filter(|p| p.enabled && !now.iter().any(|s| s.provider == p.id))
+        .map(|p| p.id.as_str())
+        .collect();
+    if !unreadable.is_empty() {
+        println!(
+            "\n  No reading from: {}. Record one by hand with\n  firm usage --provider ID --percent N",
+            unreadable.join(", ")
+        );
+    }
     Ok(())
 }
 

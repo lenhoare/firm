@@ -39,6 +39,8 @@ firm board --watch --config firm.parallel.toml    # follow a run live, in anothe
 firm board --forum --config firm.parallel.toml    # read what the agents have learned
 firm board --retire ID --config firm.parallel.toml # take a stale entry out of circulation
 firm board --prune --config firm.parallel.toml    # reclaim finished runs' worktrees
+firm board --stats --config firm.parallel.toml   # what routing has learned about each provider
+firm usage --config firm.parallel.toml           # what has been spent, and current allowances
 ```
 
 A run reports progress as it happens: each dispatch, each attempt's outcome with its
@@ -179,9 +181,12 @@ apply: a new task must bring its own check, the graph is revalidated so nothing 
 a cycle, finished work cannot be revised, and a run is capped at 60 tasks. Every proposal
 is recorded with its author and whether it was accepted, and shown in the run summary.
 
-A run also records what it cost, sampled before and after: share of a rolling window for
-providers that report a percentage, tokens for those that report totals. Turn it off with
-`record_usage = false`.
+A run records what it cost, sampled before and after, and `firm usage` reports the total
+across runs. One caveat worth knowing: only a **percentage of a stated window** measures an
+account. The muse and qwen probes start a fresh CLI session and ask it for usage, so they
+report that session's tokens — near zero, and no use as a cost signal. Where no usable
+reading exists, record the figure by hand: `firm usage --provider codex --percent 4`. Turn
+sampling off with `record_usage = false`.
 
 Not yet built:
 pluggable human and agent scorers, and compete mode — several agents attempting the *same*
