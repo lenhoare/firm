@@ -288,12 +288,23 @@ mode. **Planning cost is not recorded anywhere**, which makes exactly this compa
 harder than it should be; recording tokens and cost per planning call is worth doing before
 choosing a default planner on economics.
 
-### Allocation from evidence, not self-report
+### Allocation from evidence, not self-report — implemented
 
 A bidding model in which agents declare `confidence: 0.87, capability: 0.92` was
 considered and rejected: those numbers are produced by the model about itself and are
-uncalibrated. The attempts ledger already holds better data — real durations, pass rates,
-retries and cost per provider. Route from that.
+uncalibrated. The attempts ledger holds better data, and routing now uses it.
+
+Cost still leads — that is the point of the roster. Evidence orders providers within a
+tier, and demotes one below every tier when it has enough of a record and too much of it
+is rejection: a cheap agent whose work is usually thrown away is not cheap, because each
+rejection buys another run. An unproven provider is given the benefit of the doubt rather
+than ranked last on no evidence, and only the last fortnight counts, since a provider that
+was unreliable a month ago may have been fixed.
+
+Routing is a default, never a verdict. A task may pin a provider, and `--provider` forces
+one for a whole run — which is also how two providers are compared on identical work.
+`firm board --stats` shows the record routing is reading, so the choice is inspectable
+rather than something the system does silently.
 
 ### Deliberately deferred: ensemble decomposition
 

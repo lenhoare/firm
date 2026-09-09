@@ -18,7 +18,7 @@ async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() || args.iter().any(|a| a == "--help" || a == "-h") {
         println!(
-            "Firm 0.1 — experimental agent team\n\n  firm serve [--live] [--config PATH]\n  firm probe [--config PATH]\n  firm usage --provider ID (--percent N | --tokens N) [--label TEXT] [--run ID]\n  firm plan --brief BRIEF.md [--out tasks.json] [--config PATH]\n  firm board --tasks PATH [--live] [--config PATH]\n  firm board [--watch | --forum | --retire ID | --prune] [--config PATH]\n\nBoard runs the v1 engine: several agents work in parallel on a task graph, each in its\nown git worktree; only work passing verify_command is merged. The workspace must be a\nclean git repository and your own branch is never modified.\n\nDefault: demo mode, localhost:7433, firm.toml.\nProbe reads Codex login type and rate limits; it never starts a model turn.\nLive mode uses your existing Codex subscription and configured worker CLI logins.\nStart app-server separately: codex app-server --listen ws://127.0.0.1:4500"
+            "Firm 0.1 — experimental agent team\n\n  firm serve [--live] [--config PATH]\n  firm probe [--config PATH]\n  firm usage --provider ID (--percent N | --tokens N) [--label TEXT] [--run ID]\n  firm plan --brief BRIEF.md [--out tasks.json] [--config PATH]\n  firm board --tasks PATH [--live] [--config PATH]\n  firm board [--watch | --forum | --retire ID | --prune | --stats] [--config PATH]\n  firm board --tasks PATH --provider ID   (force one provider, for comparisons)\n\nBoard runs the v1 engine: several agents work in parallel on a task graph, each in its\nown git worktree; only work passing verify_command is merged. The workspace must be a\nclean git repository and your own branch is never modified.\n\nDefault: demo mode, localhost:7433, firm.toml.\nProbe reads Codex login type and rate limits; it never starts a model turn.\nLive mode uses your existing Codex subscription and configured worker CLI logins.\nStart app-server separately: codex app-server --listen ws://127.0.0.1:4500"
         );
         return Ok(());
     }
@@ -29,6 +29,7 @@ async fn main() -> Result<()> {
     let mut forum = false;
     let mut retire: Option<&str> = None;
     let mut prune = false;
+    let mut stats = false;
     let mut brief_path: Option<&str> = None;
     let mut out_path: Option<&str> = None;
     let mut provider: Option<&str> = None;
@@ -51,6 +52,7 @@ async fn main() -> Result<()> {
             "--watch" => watch = true,
             "--forum" => forum = true,
             "--prune" => prune = true,
+            "--stats" => stats = true,
             "--provider" => {
                 index += 1;
                 provider = Some(args.get(index).context("Missing provider id")?);
@@ -95,7 +97,20 @@ async fn main() -> Result<()> {
         return plan(config, brief_path, out_path, live).await;
     }
     if args[0] == "board" {
-        return board(config, tasks_path, live, watch, forum, retire, prune).await;
+        return board(
+            config,
+            BoardOptions {
+                tasks_path,
+                live,
+                watch,
+                forum,
+                retire,
+                prune,
+                stats,
+                force_provider: provider,
+            },
+        )
+        .await;
     }
     if args[0] == "probe" {
         let rpc = codex::Codex::connect(&config.codex_url)
@@ -228,18 +243,61 @@ async fn main() -> Result<()> {
 /// Run one v1 board to completion. Several agents work in parallel on a task graph, each
 /// in an isolated git worktree; the controller scores every attempt and merges only what
 /// passes. There is no manager in this loop.
-async fn board(
-    config: Config,
-    tasks_path: Option<&str>,
+struct BoardOptions<'a> {
+    tasks_path: Option<&'a str>,
     live: bool,
     watch: bool,
     forum: bool,
-    retire: Option<&str>,
+    retire: Option<&'a str>,
     prune: bool,
-) -> Result<()> {
+    stats: bool,
+    force_provider: Option<&'a str>,
+}
+
+async fn board(config: Config, options: BoardOptions<'_>) -> Result<()> {
+    let BoardOptions {
+        tasks_path,
+        live,
+        watch,
+        forum,
+        retire,
+        prune,
+        stats,
+        force_provider,
+    } = options;
     let board_path = v1::dispatch::board_path(&config.state_dir, live);
     if prune {
         return prune_worktrees(&config, live).await;
+    }
+    if stats {
+        // What routing is actually going on, so the choice is inspectable rather than
+        // something the system does silently.
+        let board = v1::board::Board::open_readonly(&board_path)?;
+        let since = v1::dispatch::evidence_since();
+        let stats = board.provider_stats(since)?;
+        println!("Provider record over the last {} days, as routing sees it:\n",
+            v1::dispatch::EVIDENCE_WINDOW_SECONDS / 86400);
+        if stats.is_empty() {
+            println!("  No attempts yet; routing falls back to cost alone.");
+        }
+        for (id, record) in &stats {
+            let enough = record.attempts >= v1::dispatch::MIN_EVIDENCE;
+            println!(
+                "  {id:<8} {:>3} attempts  {:>3}% accepted  median {}s{}",
+                record.attempts,
+                record.success_percent(),
+                record.median_seconds(),
+                if !enough {
+                    "   (too few to judge; given the benefit of the doubt)"
+                } else if record.success_percent() < v1::dispatch::MIN_SUCCESS_PERCENT {
+                    "   (tried last: too often rejected to be cheap)"
+                } else {
+                    ""
+                }
+            );
+        }
+        println!("\nRouting: {}. Override with --provider ID, or pin a task.", config.routing);
+        return Ok(());
     }
     if let Some(id) = retire {
         // Knowledge goes stale: an entry true of one environment is false after a fix.
@@ -322,7 +380,11 @@ async fn board(
 
     // Report progress as it happens, so a run is legible without a second terminal.
     let (progress, mut events) = tokio::sync::mpsc::unbounded_channel();
-    let engine = std::sync::Arc::new(engine.with_progress(progress));
+    let engine = std::sync::Arc::new(
+        engine
+            .with_progress(progress)
+            .with_forced_provider(force_provider.map(str::to_string)),
+    );
     let started = std::time::Instant::now();
     let printer = tokio::spawn(async move {
         while let Some(event) = events.recv().await {

@@ -38,6 +38,12 @@ pub struct Config {
     /// incidentally, and rejecting an attempt for that would be a false accusation.
     #[serde(default = "lockfiles")]
     pub scope_exempt: Vec<String>,
+    /// How an unpinned task chooses a provider. `evidence` uses the attempts ledger —
+    /// real outcomes and durations — while still preferring the cheapest tier. `tier`
+    /// ignores the record and orders purely by cost. Either way an explicit pin on a task,
+    /// or `--provider` on a run, overrides the choice entirely.
+    #[serde(default = "default_routing")]
+    pub routing: String,
     /// Hard cap on the forum slice injected into a worker's prompt. An unbounded forum
     /// poisons every prompt.
     #[serde(default = "default_forum_bytes")]
@@ -68,6 +74,10 @@ fn one() -> usize {
 
 fn yes() -> bool {
     true
+}
+
+fn default_routing() -> String {
+    "evidence".into()
 }
 
 fn lockfiles() -> Vec<String> {

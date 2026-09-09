@@ -89,8 +89,16 @@ anything runs — the human checkpoint is that file. Graphs can still be hand-au
 - At most five agents run at once (`MAX_CONCURRENT`), and each provider has its own
   `max_concurrent`. Providers carry a `tier`: `0` is cheapest. An unpinned task takes the
   cheapest provider that has both allowance and a free slot, so work fills the cheap tier
-  and **spills to the next** rather than queueing behind a busy provider. A task may still
-  pin itself to one provider.
+  and **spills to the next** rather than queueing behind a busy provider.
+- Routing then consults the **attempts ledger** — real acceptance rates and median times
+  over the last fortnight, not a model's opinion of itself. Cost still leads; evidence
+  decides between equals and demotes a provider whose work is usually rejected, because a
+  cheap agent that fails is not cheap: every rejection costs another run. An unproven
+  provider gets the benefit of the doubt until it has a record. `firm board --stats` shows
+  what routing sees. Set `routing = "tier"` to ignore the record entirely.
+- **You can always override it**: pin `provider` on a task, or run
+  `firm board --tasks … --provider ID` to send everything to one provider — which is how to
+  compare two providers on the same work.
 - A task declares in `files` what it may modify, and an attempt that changes anything else
   is rejected. Without it, the obvious way to pass a test you cannot satisfy is to edit the
   test — and nothing would notice. Lockfiles are exempt, since a build tool can rewrite one

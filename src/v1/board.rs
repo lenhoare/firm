@@ -230,6 +230,36 @@ impl Mutation {
     }
 }
 
+/// One provider's observed record.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct Stats {
+    pub attempts: usize,
+    pub verified: usize,
+    pub durations: Vec<u64>,
+}
+
+impl Stats {
+    /// Share of attempts that were accepted, as a percentage. An unproven provider is
+    /// given the benefit of the doubt rather than ranked last on no evidence.
+    pub fn success_percent(&self) -> u32 {
+        if self.attempts == 0 {
+            return 100;
+        }
+        ((self.verified as f64 / self.attempts as f64) * 100.0).round() as u32
+    }
+
+    /// Typical time to succeed. The median, not the mean: one agent that hung for fifteen
+    /// minutes should not redefine how long a provider usually takes.
+    pub fn median_seconds(&self) -> u64 {
+        if self.durations.is_empty() {
+            return 0;
+        }
+        let mut sorted = self.durations.clone();
+        sorted.sort_unstable();
+        sorted[sorted.len() / 2]
+    }
+}
+
 pub struct Board {
     conn: Connection,
 }
@@ -652,6 +682,37 @@ impl Board {
             }))
         })?;
         rows.map(|r| r.map_err(anyhow::Error::from)).collect()
+    }
+
+    /// What each provider has actually done, from the attempts ledger. This is the
+    /// evidence routing uses: real outcomes and real durations, rather than a model's
+    /// opinion of its own capability.
+    pub fn provider_stats(&self, since: u64) -> Result<BTreeMap<String, Stats>> {
+        let mut query = self.conn.prepare(
+            "SELECT provider,state,started_at,finished_at FROM attempts WHERE started_at>=?1",
+        )?;
+        let rows = query.query_map([since], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, u64>(2)?,
+                r.get::<_, Option<u64>>(3)?,
+            ))
+        })?;
+        let mut stats: BTreeMap<String, Stats> = BTreeMap::new();
+        for row in rows {
+            let (provider, state, started, finished) = row?;
+            let entry = stats.entry(provider).or_default();
+            entry.attempts += 1;
+            if state == "verified" {
+                entry.verified += 1;
+                // Only successful work tells you how long the provider takes to succeed.
+                if let Some(finished) = finished {
+                    entry.durations.push(finished.saturating_sub(started));
+                }
+            }
+        }
+        Ok(stats)
     }
 
     /// Store raw readings rather than differences, so later analysis can ask questions we

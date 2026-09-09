@@ -21,6 +21,13 @@ use tokio::sync::{Mutex, Semaphore, watch};
 pub const MAX_CONCURRENT: usize = 5;
 /// How many times a task may be attempted before it is failed.
 pub const MAX_ATTEMPTS: usize = 2;
+/// How far back the ledger is consulted when routing. Recent behaviour is what matters:
+/// a provider that was unreliable last month may have been fixed since.
+pub const EVIDENCE_WINDOW_SECONDS: u64 = 14 * 24 * 3600;
+/// Attempts needed before a provider's record is allowed to demote it.
+pub const MIN_EVIDENCE: usize = 5;
+/// Below this success rate, a provider is tried last regardless of price.
+pub const MIN_SUCCESS_PERCENT: u32 = 50;
 
 /// What the engine reports as a run proceeds. Typed rather than pre-formatted text so the
 /// CLI and, later, the dashboard can render the same events differently.
@@ -58,6 +65,8 @@ pub struct Engine {
     merge_lock: Mutex<()>,
     inflight: Arc<Semaphore>,
     provider_slots: BTreeMap<String, Arc<Semaphore>>,
+    /// Forces every unpinned task to one provider, for a deliberate comparison.
+    force_provider: Option<String>,
 }
 
 #[derive(Debug, Default, serde::Serialize)]
@@ -124,9 +133,17 @@ impl Engine {
                 inflight: Arc::new(Semaphore::new(MAX_CONCURRENT)),
                 provider_slots,
                 progress: None,
+                force_provider: None,
             },
             run_id,
         ))
+    }
+
+    /// Send every unpinned task to one provider, overriding routing entirely.
+    #[must_use]
+    pub fn with_forced_provider(mut self, provider: Option<String>) -> Self {
+        self.force_provider = provider;
+        self
     }
 
     /// Report progress as the run proceeds. Without this the engine is silent.
@@ -152,12 +169,17 @@ impl Engine {
             .with_context(|| format!("Provider {id} is not configured"))
     }
 
-    /// Providers a task may use, cheapest first. An explicit pin yields just that one.
-    /// Otherwise every enabled provider is a candidate, ordered by tier and then by how
-    /// much spare capacity it has, so work fills the cheapest tier and spills to the next
-    /// rather than queueing behind a busy provider.
-    fn candidates(&self, pinned: Option<&str>) -> Result<Vec<Provider>> {
-        if let Some(id) = pinned {
+    /// Providers a task may use, best first.
+    ///
+    /// Cost still leads: the cheapest tier is tried first, because that is the point of the
+    /// roster. Evidence decides between equals and demotes a provider that keeps failing —
+    /// a cheap agent whose work is usually rejected is not cheap, since every rejection
+    /// costs another run. An unproven provider is given the benefit of the doubt rather
+    /// than ranked last on no evidence.
+    ///
+    /// Overrides beat all of it: a task pinned to a provider, or `--provider` on the run.
+    async fn candidates(&self, pinned: Option<&str>) -> Result<Vec<Provider>> {
+        if let Some(id) = pinned.or(self.force_provider.as_deref()) {
             let provider = self.provider(id)?;
             ensure!(provider.enabled, "Provider {id} is disabled");
             ensure!(provider.worker, "Provider {id} is not available as a worker");
@@ -171,13 +193,33 @@ impl Engine {
             .cloned()
             .collect();
         ensure!(!providers.is_empty(), "No provider available as a worker");
+
+        let stats = if self.config.routing == "evidence" {
+            let since = now().saturating_sub(EVIDENCE_WINDOW_SECONDS);
+            self.board.lock().await.provider_stats(since).unwrap_or_default()
+        } else {
+            BTreeMap::new()
+        };
+
         providers.sort_by_key(|p| {
             let free = self
                 .provider_slots
                 .get(&p.id)
                 .map_or(0, |s| s.available_permits());
-            // Cheapest tier first; among equals, the one with the most spare capacity.
-            (p.tier, std::cmp::Reverse(free), p.id.clone())
+            let record = stats.get(&p.id).cloned().unwrap_or_default();
+            let success = record.success_percent();
+            // Enough evidence to be sure, and a record bad enough that trying it first
+            // wastes a run: sink it below everything else, whatever it costs.
+            let unreliable =
+                record.attempts >= MIN_EVIDENCE && success < MIN_SUCCESS_PERCENT;
+            (
+                u8::from(unreliable),
+                p.tier,
+                std::cmp::Reverse(success),
+                record.median_seconds(),
+                std::cmp::Reverse(free),
+                p.id.clone(),
+            )
         });
         Ok(providers)
     }
@@ -235,7 +277,7 @@ impl Engine {
                 let Ok(global) = self.inflight.clone().try_acquire_owned() else {
                     break;
                 };
-                let candidates = match self.candidates(task.provider.as_deref()) {
+                let candidates = match self.candidates(task.provider.as_deref()).await {
                     Ok(candidates) => candidates,
                     Err(error) => {
                         let mut board = self.board.lock().await;
@@ -972,6 +1014,11 @@ pub fn clip(text: &str, limit: usize) -> String {
         end -= 1;
     }
     format!("{}\n[truncated]", &text[..end])
+}
+
+/// The earliest attempt routing will consider.
+pub fn evidence_since() -> u64 {
+    now().saturating_sub(EVIDENCE_WINDOW_SECONDS)
 }
 
 /// Open the board for a mode, alongside v0's separate state databases.

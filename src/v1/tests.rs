@@ -355,6 +355,114 @@ async fn a_failed_attempt_warns_the_group_rather_than_disappearing() {
     );
 }
 
+/// Give a provider a record by writing attempts straight into the ledger.
+fn record_history(board: &mut Board, provider: &str, verified: usize, rejected: usize) {
+    for index in 0..(verified + rejected) {
+        let id = format!("{provider}-history-{index}");
+        let mut attempt = super::board::Attempt::reserved(
+            id,
+            "old-run",
+            "t",
+            provider,
+            "b".into(),
+            "c".into(),
+        );
+        board.start_attempt(&attempt).unwrap();
+        attempt.finished_at = Some(attempt.started_at + 10);
+        attempt.state = if index < verified {
+            super::board::AttemptState::Verified
+        } else {
+            super::board::AttemptState::Rejected
+        };
+        board.finish_attempt(&attempt).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn a_cheap_provider_that_keeps_failing_is_no_longer_tried_first() {
+    // A cheap agent whose work is usually rejected is not cheap: every rejection costs
+    // another run. Evidence has to be able to overrule price.
+    let mut harness = harness().await;
+    harness.config.forum_observer = String::new();
+    harness.config.providers[0].max_concurrent = 1;
+    let mut dear = harness.config.providers[0].clone();
+    dear.id = "dear".into();
+    dear.name = "Dear".into();
+    dear.tier = 2;
+    harness.config.providers.push(dear);
+
+    let mut board = Board::open(&harness.board_path).unwrap();
+    // The cheap one has a bad record; the dear one a good one.
+    record_history(&mut board, "fake", 1, 9);
+    record_history(&mut board, "dear", 9, 1);
+    drop(board);
+
+    let spec = RunSpec {
+        objective: "Evidence overrules price".into(),
+        tasks: vec![{
+            let mut t = task("one", "CREATE:one.txt", &[]);
+            t.provider = None;
+            t
+        }],
+    };
+    let (run_id, board) = drive(&harness, spec).await;
+    let used = board.attempts(&run_id).unwrap();
+    let chosen = used
+        .iter()
+        .find(|a| a["task_id"] == "one")
+        .unwrap()["provider"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(chosen, "dear", "the unreliable cheap provider was passed over");
+}
+
+#[tokio::test]
+async fn an_operator_override_beats_the_evidence() {
+    // Routing is a default, not a verdict: a deliberate comparison must be possible.
+    let mut harness = harness().await;
+    harness.config.forum_observer = String::new();
+    let mut dear = harness.config.providers[0].clone();
+    dear.id = "dear".into();
+    dear.name = "Dear".into();
+    dear.tier = 2;
+    harness.config.providers.push(dear);
+
+    let mut board = Board::open(&harness.board_path).unwrap();
+    record_history(&mut board, "dear", 1, 9); // a poor record, deliberately chosen anyway
+    drop(board);
+
+    let spec = RunSpec {
+        objective: "The operator decides".into(),
+        tasks: vec![{
+            let mut t = task("one", "CREATE:one.txt", &[]);
+            t.provider = None;
+            t
+        }],
+    };
+    let board = Board::open(&harness.board_path).unwrap();
+    let (_tx, rx) = watch::channel(0);
+    let (engine, run_id) = Engine::create(harness.config.clone(), board, scorer(), rx, &spec)
+        .await
+        .unwrap();
+    Arc::new(engine.with_forced_provider(Some("dear".into())))
+        .drive(&run_id)
+        .await
+        .unwrap();
+
+    let board = Board::open(&harness.board_path).unwrap();
+    let chosen = board
+        .attempts(&run_id)
+        .unwrap()
+        .iter()
+        .find(|a| a["task_id"] == "one")
+        .unwrap()["provider"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(chosen, "dear", "--provider overrides routing entirely");
+}
+
 #[tokio::test]
 async fn unpinned_work_fills_the_cheapest_tier_then_spills_to_the_next() {
     let mut harness = harness().await;
