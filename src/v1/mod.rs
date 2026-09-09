@@ -14,6 +14,7 @@ pub mod dispatch;
 pub mod forum;
 pub mod plan;
 pub mod scorer;
+pub mod usage;
 pub mod worktree;
 
 #[cfg(test)]

@@ -287,6 +287,8 @@ async fn board(
     let (cancel, cancel_rx) = tokio::sync::watch::channel(0u64);
     let workspace = config.workspace.clone();
     let state_dir = config.state_dir.clone();
+    let config_usage = config.record_usage;
+    let usage_config = config.clone();
     let (engine, run_id) =
         v1::dispatch::Engine::create(config, board, scorer, cancel_rx, &spec).await?;
 
@@ -351,6 +353,11 @@ async fn board(
         }
     });
 
+    let before = if config_usage {
+        v1::usage::sample(&usage_config).await
+    } else {
+        Vec::new()
+    };
     println!(
         "Firm v1 {} — run {}\nObjective: {}\n{} tasks, up to {} agents at once. Workspace: {}\nFollow along here, or in another terminal with: firm board --watch\n",
         if live { "LIVE" } else { "DEMO-SAFE (real CLIs, disposable workspace)" },
@@ -365,8 +372,32 @@ async fn board(
     // Close the channel so the printer drains and stops before the summary.
     drop(engine);
     let _ = printer.await;
+
+    // What the run consumed, in the currency that matters for a subscription: share of a
+    // rolling window. Sampled twice, never per call.
+    let consumed = if config_usage {
+        let after = v1::usage::sample(&usage_config).await;
+        let used = v1::usage::consumed(&before, &after);
+        if let Ok(mut board) = v1::board::Board::open(&board_path) {
+            let _ = board.record_usage(&run_id, "before", &before);
+            let _ = board.record_usage(&run_id, "after", &after);
+        }
+        used
+    } else {
+        Vec::new()
+    };
     let board = v1::board::Board::open(&v1::dispatch::board_path(&state_dir, live))?;
     summarise(&board, &run_id, &workspace)?;
+    if !consumed.is_empty() {
+        println!(
+            "\nThis run consumed: {}",
+            consumed
+                .iter()
+                .map(v1::usage::describe)
+                .collect::<Vec<_>>()
+                .join(" · ")
+        );
+    }
     if let Some(check) = &outcome.final_check {
         println!(
             "Whole-project check on the integrated result: {}",

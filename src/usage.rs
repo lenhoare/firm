@@ -177,7 +177,7 @@ fn muse_usage(usage: Option<&Usage>, time: u64, max_age: u64) -> Value {
     })
 }
 
-async fn probe_grok_usage(command: &str, workspace: &Path) -> anyhow::Result<Value> {
+pub(crate) async fn probe_grok_usage(command: &str, workspace: &Path) -> anyhow::Result<Value> {
     let shell_command = format!(
         "stty rows 24 cols 80; exec {} --continue --no-alt-screen",
         shell_quote(command)
@@ -227,7 +227,7 @@ async fn probe_grok_usage(command: &str, workspace: &Path) -> anyhow::Result<Val
     parse_grok_usage(&String::from_utf8_lossy(&output))
 }
 
-async fn probe_qwen_usage(command: &str, workspace: &Path) -> anyhow::Result<Value> {
+pub(crate) async fn probe_qwen_usage(command: &str, workspace: &Path) -> anyhow::Result<Value> {
     let mut child = Command::new(command);
     child
         .arg("/usage")
@@ -251,7 +251,7 @@ async fn probe_qwen_usage(command: &str, workspace: &Path) -> anyhow::Result<Val
     parse_qwen_usage(&text)
 }
 
-async fn probe_muse_usage(command: &str, workspace: &Path) -> anyhow::Result<Value> {
+pub(crate) async fn probe_muse_usage(command: &str, workspace: &Path) -> anyhow::Result<Value> {
     let shell_command = format!("stty rows 24 cols 80; exec {}", shell_quote(command));
     let mut child = Command::new("script")
         .args(["-qfec", &shell_command, "/dev/null"])

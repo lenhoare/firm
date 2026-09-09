@@ -197,7 +197,9 @@ impl Board {
             CREATE TABLE IF NOT EXISTS attempts (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, task_id TEXT NOT NULL, provider TEXT NOT NULL, branch TEXT NOT NULL, base_commit TEXT NOT NULL, started_at INTEGER NOT NULL, finished_at INTEGER, native_exit INTEGER, interruption TEXT, passed INTEGER, score REAL, detail TEXT NOT NULL DEFAULT '', files_changed TEXT NOT NULL DEFAULT '[]', output TEXT NOT NULL DEFAULT '', activity TEXT NOT NULL DEFAULT '', observation TEXT NOT NULL DEFAULT '', state TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS attempts_task ON attempts(run_id, task_id);
             CREATE INDEX IF NOT EXISTS attempts_usage ON attempts(provider, started_at);
-            CREATE TABLE IF NOT EXISTS cooldowns (provider TEXT PRIMARY KEY, until INTEGER NOT NULL);",
+            CREATE TABLE IF NOT EXISTS cooldowns (provider TEXT PRIMARY KEY, until INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS usage_samples (id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, phase TEXT NOT NULL, provider TEXT NOT NULL, metric TEXT NOT NULL, label TEXT NOT NULL, value REAL NOT NULL, at INTEGER NOT NULL);
+            CREATE INDEX IF NOT EXISTS usage_run ON usage_samples(run_id, phase);",
         )?;
         // `CREATE TABLE IF NOT EXISTS` never alters an existing table, so columns added
         // after a board was created must be migrated in explicitly.
@@ -439,6 +441,25 @@ impl Board {
             "UPDATE attempts SET activity=?2 WHERE id=?1",
             params![attempt_id, activity],
         )?;
+        Ok(())
+    }
+
+    /// Store raw readings rather than differences, so later analysis can ask questions we
+    /// have not thought of yet.
+    pub fn record_usage(
+        &mut self,
+        run_id: &str,
+        phase: &str,
+        samples: &[super::usage::Sample],
+    ) -> Result<()> {
+        let transaction = self.conn.transaction()?;
+        for sample in samples {
+            transaction.execute(
+                "INSERT INTO usage_samples(run_id,phase,provider,metric,label,value,at) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+                params![run_id, phase, sample.provider, sample.metric, sample.label, sample.value, now()],
+            )?;
+        }
+        transaction.commit()?;
         Ok(())
     }
 

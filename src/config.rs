@@ -29,6 +29,11 @@ pub struct Config {
     pub forum_observer: String,
     #[serde(default = "default_planner")]
     pub planner: String,
+    /// Read each provider's remaining allowance before and after a run, so the cost of the
+    /// work is recorded in the currency that matters — share of a rolling window. Reading
+    /// usage takes seconds per provider, so it happens twice per run, never per call.
+    #[serde(default = "yes")]
+    pub record_usage: bool,
     /// Hard cap on the forum slice injected into a worker's prompt. An unbounded forum
     /// poisons every prompt.
     #[serde(default = "default_forum_bytes")]
