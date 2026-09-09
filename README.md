@@ -136,6 +136,11 @@ anything runs — the human checkpoint is that file. Graphs can still be hand-au
   the queue and start again cleanly, and any salvaged partial work is listed so you can
   cherry-pick it if it was worth having. A hard kill is handled the same way, reconciled
   when the run is next opened.
+- **An unclean stop is covered too.** A closed terminal (SIGHUP) or `kill` (SIGTERM) now
+  stops the run the same way Ctrl+C does, rather than killing the controller outright. And
+  where nothing got the chance to commit — SIGKILL, a power cut — `--resume` rescues work
+  left uncommitted in an abandoned worktree onto its attempt branch before dispatching
+  anything, so an unclean stop loses no more than a clean one.
 - Each run leaves a checked-out integration worktree, around 48 MiB for a small Rust
   crate. `--prune` removes those of finished runs, keeping the most recent; every run's
   work stays on its `firm/run-<id>` branch regardless.

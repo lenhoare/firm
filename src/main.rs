@@ -408,14 +408,13 @@ async fn board(config: Config, options: BoardOptions<'_>) -> Result<()> {
     let canceller = cancel.clone();
     let stop_id = run_id.clone();
     tokio::spawn(async move {
-        if tokio::signal::ctrl_c().await.is_ok() {
-            eprintln!(
-                "\nStopping. Work already merged is safe on the run branch; continue with:\n  \
-                 firm board --resume {}",
-                &stop_id[..8]
-            );
-            canceller.send_modify(|v| *v += 1);
-        }
+        stop_signal().await;
+        eprintln!(
+            "\nStopping. Work already merged is safe on the run branch; continue with:\n  \
+             firm board --resume {}",
+            &stop_id[..8]
+        );
+        canceller.send_modify(|v| *v += 1);
     });
 
     let before = if config_usage {
@@ -695,6 +694,34 @@ async fn plan(
     Ok(())
 }
 
+/// Any signal that means "stop now".
+///
+/// Ctrl+C is not the only way a run ends: a closed terminal sends SIGHUP and `kill` sends
+/// SIGTERM, and both previously killed the controller outright — which strands whatever the
+/// agents had written, because nothing got the chance to commit it.
+async fn stop_signal() {
+    use tokio::signal::unix::{SignalKind, signal};
+    let mut terminate = match signal(SignalKind::terminate()) {
+        Ok(handler) => handler,
+        Err(_) => {
+            let _ = tokio::signal::ctrl_c().await;
+            return;
+        }
+    };
+    let mut hangup = match signal(SignalKind::hangup()) {
+        Ok(handler) => handler,
+        Err(_) => {
+            let _ = tokio::signal::ctrl_c().await;
+            return;
+        }
+    };
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {}
+        _ = terminate.recv() => {}
+        _ = hangup.recv() => {}
+    }
+}
+
 /// One line of run progress, shared by a fresh run and a resumed one.
 fn print_progress(event: v1::dispatch::Progress, started: std::time::Instant) {
     let at = elapsed(started.elapsed().as_secs());
@@ -775,6 +802,15 @@ async fn resume_run(
     let engine =
         v1::dispatch::Engine::attach(config, board, scorer, cancel_rx, &run_id).await?;
 
+    // An unclean stop leaves work uncommitted in an attempt worktree. Rescue it onto its
+    // branch before anything else, or it is lost the moment the worktree is reused.
+    for (branch, files) in engine.salvage().await.unwrap_or_default() {
+        println!(
+            "  Recovered work left by an unclean stop onto {branch}: {}",
+            files.join(", ")
+        );
+    }
+
     let board = v1::board::Board::open_readonly(&board_path)?;
     let outstanding = board
         .tasks(&run_id)?
@@ -839,14 +875,13 @@ async fn resume_run(
     let canceller = cancel.clone();
     let stop_id = run_id.clone();
     tokio::spawn(async move {
-        if tokio::signal::ctrl_c().await.is_ok() {
-            eprintln!(
-                "\nStopping. Merged work is safe on the run branch; continue with:\n  \
-                 firm board --resume {}",
-                &stop_id[..8]
-            );
-            canceller.send_modify(|v| *v += 1);
-        }
+        stop_signal().await;
+        eprintln!(
+            "\nStopping. Merged work is safe on the run branch; continue with:\n  \
+             firm board --resume {}",
+            &stop_id[..8]
+        );
+        canceller.send_modify(|v| *v += 1);
     });
 
     engine.drive(&run_id).await?;

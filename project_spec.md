@@ -456,9 +456,14 @@ lands incrementally and everything merged is a commit on the run's branch. Resum
 Every run minted a fresh run id and branch, so a stopped run could not be continued — the
 work survived, but only by starting again and redoing it.
 
-Pausing mid-task destroys nothing. An agent killed part-way has what it had already written
-committed to its attempt branch before the interruption is recorded, and attempt branches
-outlive their worktrees. The work is not reused automatically — a half-finished attempt is
+Pausing mid-task destroys nothing, in either sense of stopping.
+
+A clean stop — Ctrl+C, and now SIGTERM and SIGHUP, since a closed terminal or `kill`
+previously killed the controller outright — lets the agent's work be committed before the
+interruption is recorded. An unclean stop gives no such chance, so `--resume` first
+rescues anything left uncommitted in an abandoned attempt worktree onto its branch. Either
+way the work ends up on a branch, and attempt branches outlive their worktrees. It is not
+reused automatically — a half-finished attempt is
 a poor starting point, and the task starts again cleanly — but `--resume` lists it so it can
 be inspected or cherry-picked.
 

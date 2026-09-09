@@ -178,6 +178,11 @@ impl Engine {
         })
     }
 
+    /// Commit anything an unclean stop left uncommitted, and say what was rescued.
+    pub async fn salvage(&self) -> Result<Vec<(String, Vec<String>)>> {
+        self.trees.salvage_abandoned().await
+    }
+
     /// Send every unpinned task to one provider, overriding routing entirely.
     #[must_use]
     pub fn with_forced_provider(mut self, provider: Option<String>) -> Self {

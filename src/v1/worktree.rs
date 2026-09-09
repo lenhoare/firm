@@ -144,6 +144,59 @@ impl Worktrees {
         })
     }
 
+    /// Rescue work stranded by an unclean stop.
+    ///
+    /// A clean stop commits an agent's work before recording the interruption. A hard kill
+    /// — SIGKILL, a lost terminal, a power cut — does not, and leaves the files sitting
+    /// uncommitted in an attempt worktree that nothing will ever look at again. Committing
+    /// them to the attempt's own branch means an unclean stop loses no more than a clean
+    /// one; the work is still not reused automatically, only preserved.
+    pub async fn salvage_abandoned(&self) -> Result<Vec<(String, Vec<String>)>> {
+        let mut rescued = Vec::new();
+        let Ok(entries) = std::fs::read_dir(&self.root) else {
+            return Ok(rescued);
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !name.starts_with("attempt-") || !path.join(".git").exists() {
+                continue;
+            }
+            let dirty = git(&path, &["status", "--porcelain"]).await.unwrap_or_default();
+            if !dirty.is_empty() {
+                let branch = git(&path, &["rev-parse", "--abbrev-ref", "HEAD"])
+                    .await
+                    .unwrap_or_else(|_| name.clone());
+                let attempt = Attempt {
+                    branch: branch.clone(),
+                    path: path.clone(),
+                    base_commit: String::new(),
+                };
+                if attempt
+                    .commit("firm: work recovered after an unclean stop")
+                    .await
+                    .unwrap_or(false)
+                {
+                    let files = git(&path, &["show", "--name-only", "--format=", "HEAD"])
+                        .await
+                        .unwrap_or_default();
+                    rescued.push((
+                        branch,
+                        files.lines().map(str::to_string).collect::<Vec<_>>(),
+                    ));
+                }
+            }
+            // The directory has served its purpose either way; the branch carries the work.
+            let _ = git(
+                &self.repo,
+                &["worktree", "remove", "--force", &path.to_string_lossy()],
+            )
+            .await;
+        }
+        let _ = git(&self.repo, &["worktree", "prune"]).await;
+        Ok(rescued)
+    }
+
     pub fn integration_path(&self) -> &Path {
         &self.integration_path
     }
@@ -362,6 +415,44 @@ pub mod tests {
 
         trees.discard(&one).await.unwrap();
         assert!(!one.path.exists());
+    }
+
+    #[tokio::test]
+    async fn work_stranded_by_an_unclean_stop_is_recovered_onto_its_branch() {
+        // A hard kill gives the controller no chance to commit, so an agent's files sit
+        // uncommitted in a worktree nothing will look at again. They must not be lost.
+        let repo_dir = repo().await;
+        let root = tempfile::tempdir().unwrap();
+        let (trees, base) = Worktrees::create(
+            repo_dir.path(),
+            root.path(),
+            &uuid::Uuid::new_v4().to_string(),
+        )
+        .await
+        .unwrap();
+        let attempt = trees
+            .create_attempt(&uuid::Uuid::new_v4().to_string(), &base)
+            .await
+            .unwrap();
+        // The agent wrote this and then everything died before any commit.
+        std::fs::write(attempt.path.join("half-done.rs"), "fn work() {}\n").unwrap();
+
+        let rescued = trees.salvage_abandoned().await.unwrap();
+        assert_eq!(rescued.len(), 1, "the stranded work was found");
+        assert!(rescued[0].1.iter().any(|f| f == "half-done.rs"), "{rescued:?}");
+
+        // It is on the attempt's branch, and the worktree is gone.
+        let listing = git(
+            repo_dir.path(),
+            &["ls-tree", "-r", "--name-only", &attempt.branch],
+        )
+        .await
+        .unwrap();
+        assert!(listing.contains("half-done.rs"), "{listing}");
+        assert!(!attempt.path.exists(), "the spent worktree is cleaned up");
+
+        // Nothing to rescue the second time, and it does not fail.
+        assert!(trees.salvage_abandoned().await.unwrap().is_empty());
     }
 
     #[tokio::test]
