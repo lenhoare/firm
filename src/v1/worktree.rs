@@ -150,8 +150,12 @@ impl Worktrees {
     /// — SIGKILL, a lost terminal, a power cut — does not, and leaves the files sitting
     /// uncommitted in an attempt worktree that nothing will ever look at again. Committing
     /// them to the attempt's own branch means an unclean stop loses no more than a clean
-    /// one; the work is still not reused automatically, only preserved.
-    pub async fn salvage_abandoned(&self) -> Result<Vec<(String, Vec<String>)>> {
+    /// one. The directories are then cleared away, having served their purpose.
+    ///
+    /// Except those named by `keep`: worktrees an interrupted attempt may still be
+    /// continued in. Their work is committed like any other, but the directory stays.
+    /// Removing it is what silently turned every resume back into a fresh start.
+    pub async fn salvage_abandoned(&self, keep: &[String]) -> Result<Vec<(String, Vec<String>)>> {
         let mut rescued = Vec::new();
         let Ok(entries) = std::fs::read_dir(&self.root) else {
             return Ok(rescued);
@@ -162,6 +166,7 @@ impl Worktrees {
             if !name.starts_with("attempt-") || !path.join(".git").exists() {
                 continue;
             }
+            let resumable = keep.iter().any(|k| Path::new(k) == path);
             let dirty = git(&path, &["status", "--porcelain"]).await.unwrap_or_default();
             if !dirty.is_empty() {
                 let branch = git(&path, &["rev-parse", "--abbrev-ref", "HEAD"])
@@ -186,12 +191,14 @@ impl Worktrees {
                     ));
                 }
             }
-            // The directory has served its purpose either way; the branch carries the work.
-            let _ = git(
-                &self.repo,
-                &["worktree", "remove", "--force", &path.to_string_lossy()],
-            )
-            .await;
+            // Otherwise the directory has served its purpose; the branch carries the work.
+            if !resumable {
+                let _ = git(
+                    &self.repo,
+                    &["worktree", "remove", "--force", &path.to_string_lossy()],
+                )
+                .await;
+            }
         }
         let _ = git(&self.repo, &["worktree", "prune"]).await;
         Ok(rescued)
@@ -437,7 +444,7 @@ pub mod tests {
         // The agent wrote this and then everything died before any commit.
         std::fs::write(attempt.path.join("half-done.rs"), "fn work() {}\n").unwrap();
 
-        let rescued = trees.salvage_abandoned().await.unwrap();
+        let rescued = trees.salvage_abandoned(&[]).await.unwrap();
         assert_eq!(rescued.len(), 1, "the stranded work was found");
         assert!(rescued[0].1.iter().any(|f| f == "half-done.rs"), "{rescued:?}");
 
@@ -452,7 +459,52 @@ pub mod tests {
         assert!(!attempt.path.exists(), "the spent worktree is cleaned up");
 
         // Nothing to rescue the second time, and it does not fail.
-        assert!(trees.salvage_abandoned().await.unwrap().is_empty());
+        assert!(trees.salvage_abandoned(&[]).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn salvage_keeps_the_worktree_an_interrupted_attempt_can_continue_in() {
+        // Salvage used to remove every attempt directory, which quietly defeated resuming:
+        // by the time a task was dispatched its worktree was gone, so continuing an
+        // interrupted attempt always fell back to starting again. Found in a live run.
+        let repo_dir = repo().await;
+        let root = tempfile::tempdir().unwrap();
+        let (trees, base) = Worktrees::create(
+            repo_dir.path(),
+            root.path(),
+            &uuid::Uuid::new_v4().to_string(),
+        )
+        .await
+        .unwrap();
+        let carry_on = trees
+            .create_attempt(&uuid::Uuid::new_v4().to_string(), &base)
+            .await
+            .unwrap();
+        let spent = trees
+            .create_attempt(&uuid::Uuid::new_v4().to_string(), &base)
+            .await
+            .unwrap();
+        std::fs::write(carry_on.path.join("half-done.rs"), "fn work() {}\n").unwrap();
+        std::fs::write(spent.path.join("abandoned.rs"), "fn gone() {}\n").unwrap();
+
+        let keep = vec![carry_on.path.to_string_lossy().to_string()];
+        let rescued = trees.salvage_abandoned(&keep).await.unwrap();
+        assert_eq!(rescued.len(), 2, "both had uncommitted work to commit: {rescued:?}");
+
+        assert!(
+            carry_on.path.exists(),
+            "the interrupted attempt keeps somewhere to carry on"
+        );
+        assert!(!spent.path.exists(), "the finished one is still cleaned up");
+
+        // Keeping the directory must not mean skipping the commit: the work is safe either way.
+        let listing = git(
+            repo_dir.path(),
+            &["ls-tree", "-r", "--name-only", &carry_on.branch],
+        )
+        .await
+        .unwrap();
+        assert!(listing.contains("half-done.rs"), "{listing}");
     }
 
     #[tokio::test]

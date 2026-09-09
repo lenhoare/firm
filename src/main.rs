@@ -804,7 +804,7 @@ async fn resume_run(
 
     // An unclean stop leaves work uncommitted in an attempt worktree. Rescue it onto its
     // branch before anything else, or it is lost the moment the worktree is reused.
-    for (branch, files) in engine.salvage().await.unwrap_or_default() {
+    for (branch, files) in engine.salvage(&run_id).await.unwrap_or_default() {
         println!(
             "  Recovered work left by an unclean stop onto {branch}: {}",
             files.join(", ")

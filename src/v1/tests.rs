@@ -433,6 +433,59 @@ async fn pausing_mid_task_keeps_what_the_agent_had_already_written() {
 }
 
 #[tokio::test]
+async fn stopping_the_run_is_not_a_verdict_on_the_agent() {
+    // An agent killed mid-task used to be recorded as rejected when it had written
+    // nothing: a judgement it never earned, which both spent one of the task's two tries
+    // and put a mark on the provider's record that routing later read as incompetence.
+    // Seen in a live run, where it failed a task outright.
+    let mut harness = harness().await;
+    harness.config.forum_observer = String::new();
+    let script = harness.config.providers[0].command.clone();
+    // Starts, writes nothing, and keeps going until it is killed.
+    std::fs::write(
+        &script,
+        "#!/bin/sh\ncat > /dev/null\necho '{\"payload_type\":\"working\"}'\nsleep 300\n",
+    )
+    .unwrap();
+
+    let spec = RunSpec {
+        objective: "Stop an agent before it writes".into(),
+        tasks: vec![task("stopped", "CREATE:never.txt", &[])],
+    };
+    let board = Board::open(&harness.board_path).unwrap();
+    let (cancel, rx) = watch::channel(0);
+    let (engine, run_id) = Engine::create(harness.config.clone(), board, scorer(), rx, &spec)
+        .await
+        .unwrap();
+    let engine = Arc::new(engine);
+    let driving = {
+        let engine = Arc::clone(&engine);
+        let run = run_id.clone();
+        tokio::spawn(async move { engine.drive(&run).await })
+    };
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    cancel.send_modify(|v| *v += 1);
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(60), driving).await;
+
+    let board = Board::open(&harness.board_path).unwrap();
+    let attempts = board.attempts(&run_id).unwrap();
+    assert_eq!(
+        attempts[0]["state"], "interrupted",
+        "stopped, not judged: {:?}",
+        attempts[0]["detail"]
+    );
+    assert!(
+        attempts[0]["passed"].is_null(),
+        "no verdict was reached, so none is recorded: {:?}",
+        attempts[0]["passed"]
+    );
+
+    let task = &board.tasks(&run_id).unwrap()[0];
+    assert!(!task.state.terminal(), "left to be picked up again: {:?}", task.state);
+    assert_eq!(task.attempts, 0, "an interruption does not spend one of the task's tries");
+}
+
+#[tokio::test]
 async fn an_interrupted_attempt_carries_on_rather_than_starting_over() {
     // Stopping an agent is not a judgement on its work. Resuming keeps the context it had
     // built and the partial work already in its worktree, exactly as reloading a session
@@ -477,7 +530,7 @@ async fn an_interrupted_attempt_carries_on_rather_than_starting_over() {
     assert_eq!(attempts[0]["state"], "interrupted", "stopped, not judged");
     let first_id = attempts[0]["id"].as_str().unwrap().to_string();
     assert!(
-        board.resumable(&run_id, "long").unwrap().is_some(),
+        board.resumable(&run_id, "long", "fake").unwrap().is_some(),
         "its worktree is kept so the work can be continued"
     );
 

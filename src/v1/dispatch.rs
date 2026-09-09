@@ -179,8 +179,9 @@ impl Engine {
     }
 
     /// Commit anything an unclean stop left uncommitted, and say what was rescued.
-    pub async fn salvage(&self) -> Result<Vec<(String, Vec<String>)>> {
-        self.trees.salvage_abandoned().await
+    pub async fn salvage(&self, run_id: &str) -> Result<Vec<(String, Vec<String>)>> {
+        let keep = self.board.lock().await.resumable_worktrees(run_id)?;
+        self.trees.salvage_abandoned(&keep).await
     }
 
     /// Send every unpinned task to one provider, overriding routing entirely.
@@ -456,7 +457,7 @@ impl Engine {
             .board
             .lock()
             .await
-            .resumable(run_id, &task.id)
+            .resumable(run_id, &task.id, &provider.id)
             .unwrap_or(None)
             .filter(|_| provider.resume_args.is_some());
         // A continued attempt keeps its own branch and worktree: its half-finished work is
@@ -551,8 +552,15 @@ impl Engine {
             let _ = self.trees.discard(&workspace).await;
         }
 
+        // An interrupted attempt was never judged, so it must not spend one of the task's
+        // tries. Without this a run stopped twice mid-task fails work nobody looked at.
+        if record.state == AttemptState::Interrupted {
+            self.board.lock().await.uncount_attempt(run_id, &task.id)?;
+        }
+
         let (state, note) = match (&outcome, record.state) {
             (Ok(()), AttemptState::Verified) => (TaskState::Merged, record.detail.clone()),
+            (_, AttemptState::Interrupted) => (TaskState::Open, record.detail.clone()),
             _ if task.attempts + 1 >= MAX_ATTEMPTS => (
                 TaskState::Failed,
                 format!("{MAX_ATTEMPTS} attempts exhausted: {}", record.detail),
@@ -704,6 +712,21 @@ impl Engine {
             .commit(&format!("firm: {} ({})", task.id, provider.id))
             .await?;
         record.files_changed = workspace.files_changed().await?;
+        // The operator stopping the run is not a verdict on the work. Scoring from here
+        // would spend one of the task's tries and put a rejection on a provider's record
+        // that it never earned — and the ledger is meant to be evidence about providers.
+        if self.cancel.has_changed().unwrap_or(false) {
+            record.state = AttemptState::Interrupted;
+            record.detail = match record.files_changed.is_empty() {
+                true => "Stopped by the controller before anything was written".into(),
+                false => format!(
+                    "Stopped by the controller. What it had written is kept on {}: {}",
+                    record.branch,
+                    record.files_changed.join(", ")
+                ),
+            };
+            return Ok(());
+        }
         // A task scoped to work that its dependencies already completed has nothing to do,
         // and an agent that correctly does nothing must not be failed for it. The check
         // decides, here as everywhere; changing no files is only a rejection when the work

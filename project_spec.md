@@ -490,7 +490,22 @@ took two sittings rather than two attempts against a provider's record.
 
 This is per-provider and opt-in: without `resume_args`, a provider simply starts the task
 again. The identity a session needs is Firm's own attempt id, passed as `{session_id}`, so
-the session and the attempt row are the same thing by construction.
+the session and the attempt row are the same thing by construction. A session belongs to
+the CLI that opened it, so only the same provider may continue one.
+
+Salvage and resumption pull in opposite directions, and salvage won for a while. It used to
+remove every attempt directory on the reasoning that the branch carries the work — true
+when nothing resumed — and `--resume` salvages before it dispatches, so in practice every
+resume silently became a fresh start. It now keeps the worktrees named by an interrupted
+attempt while still committing their work. The lesson worth keeping is that the unit test
+passed throughout, because it drove the engine directly and never took the path an operator
+takes.
+
+Interruption is not a verdict, and the ledger has to say so. An agent stopped mid-task —
+even one that had written nothing yet — is recorded `interrupted`, never `rejected`, and
+does not spend one of the task's two tries. Otherwise stopping a run twice fails work
+nobody ever looked at, and routing reads the operator's Ctrl+C as evidence about a
+provider.
 
 ## Learned from running it
 

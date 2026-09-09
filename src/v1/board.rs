@@ -575,14 +575,20 @@ impl Board {
 
     /// The attempt to continue for a task, if its last one was interrupted and its
     /// worktree is still on disk.
-    pub fn resumable(&self, run_id: &str, task_id: &str) -> Result<Option<(String, String)>> {
+    pub fn resumable(
+        &self,
+        run_id: &str,
+        task_id: &str,
+        provider: &str,
+    ) -> Result<Option<(String, String)>> {
         Ok(self
             .conn
             .query_row(
                 // The attempt now being dispatched already has a reserved row, so only
-                // finished attempts are candidates to be continued.
-                "SELECT id,worktree,state FROM attempts WHERE run_id=?1 AND task_id=?2 AND finished_at IS NOT NULL ORDER BY started_at DESC, rowid DESC LIMIT 1",
-                params![run_id, task_id],
+                // finished attempts are candidates to be continued. A session belongs to
+                // the CLI that opened it, so only the same provider may continue one.
+                "SELECT id,worktree,state FROM attempts WHERE run_id=?1 AND task_id=?2 AND provider=?3 AND finished_at IS NOT NULL ORDER BY started_at DESC, rowid DESC LIMIT 1",
+                params![run_id, task_id, provider],
                 |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)),
             )
             .optional()?
@@ -590,6 +596,25 @@ impl Board {
                 (state == "interrupted" && !worktree.is_empty() && Path::new(&worktree).exists())
                     .then_some((id, worktree))
             }))
+    }
+
+    /// Worktrees that an interrupted attempt could still be continued in. Salvage must
+    /// leave these alone: removing one turns every resume into a fresh start.
+    pub fn resumable_worktrees(&self, run_id: &str) -> Result<Vec<String>> {
+        let mut statement = self.conn.prepare(
+            "SELECT worktree FROM attempts WHERE run_id=?1 AND state='interrupted' AND worktree!=''",
+        )?;
+        let rows = statement.query_map(params![run_id], |r| r.get::<_, String>(0))?;
+        Ok(rows.flatten().collect())
+    }
+
+    /// Undo the try that `claim` counted, for an attempt that was never judged.
+    pub fn uncount_attempt(&mut self, run_id: &str, task_id: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE tasks SET attempts=MAX(attempts-1,0) WHERE run_id=?1 AND id=?2",
+            params![run_id, task_id],
+        )?;
+        Ok(())
     }
 
     pub fn finish_attempt(&mut self, attempt: &Attempt) -> Result<()> {
