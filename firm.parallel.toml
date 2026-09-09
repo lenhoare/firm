@@ -25,6 +25,7 @@ args = ["exec", "--model", "{codex_model}", "--sandbox", "workspace-write", "--a
 
 [[providers]]
 id = "grok"
+planner_args = ["--prompt-file", "{prompt_file}", "--cwd", "{workspace}", "--no-subagents", "--disable-web-search", "--tools", "list_dir,read_file,grep", "--max-turns", "40"]
 worker_timeout_seconds = 300
 idle_timeout_seconds = 60
 observer_args = ["--prompt-file", "{prompt_file}", "--cwd", "{workspace}", "--no-subagents", "--disable-web-search", "--tools", "", "--max-turns", "2", "--json-schema", "{\"type\":\"object\",\"properties\":{\"entries\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{\"kind\":{\"type\":\"string\"},\"title\":{\"type\":\"string\"},\"body\":{\"type\":\"string\"}},\"required\":[\"kind\",\"title\"]}}},\"required\":[\"entries\"]}"]

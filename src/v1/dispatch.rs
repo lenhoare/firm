@@ -662,6 +662,8 @@ impl Engine {
         }
         let mut config = self.config.clone();
         config.verify_command.clear();
+        // As for planning: an observer replies in one go, so silence is not idleness.
+        config.allowances.idle_timeout_seconds = 0;
         let mut provider = observer.clone();
         // An observer answers from its prompt. Given planning arguments it behaves like an
         // agent with tools and spends every turn exploring instead of replying, so it needs

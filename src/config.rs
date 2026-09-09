@@ -27,10 +27,18 @@ pub struct Config {
     /// observation; the controller still writes entries from its own evidence.
     #[serde(default = "default_observer")]
     pub forum_observer: String,
+    #[serde(default = "default_planner")]
+    pub planner: String,
     /// Hard cap on the forum slice injected into a worker's prompt. An unbounded forum
     /// poisons every prompt.
     #[serde(default = "default_forum_bytes")]
     pub forum_bytes: usize,
+}
+
+/// Provider that turns a written brief into a task graph. One call per run, not one per
+/// unit of work — that spacing is the cost argument.
+fn default_planner() -> String {
+    "grok".into()
 }
 
 fn default_observer() -> String {
@@ -128,6 +136,11 @@ pub struct Provider {
     pub worker_timeout_seconds: Option<u64>,
     #[serde(default)]
     pub idle_timeout_seconds: Option<u64>,
+    /// Read-only exploration invocation for planning. Distinct from `manager_args`
+    /// because a CLI's plan mode produces a plan artifact rather than a direct answer;
+    /// the planner must explore, then reply. Falls back to `manager_args` when unset.
+    #[serde(default)]
+    pub planner_args: Option<Vec<String>>,
     /// Read-and-summarise invocation for the forum observer. An observer must answer
     /// directly from its prompt; given planning arguments it will spend its turns using
     /// tools and never reply. Falls back to `manager_args` when unset.
@@ -173,6 +186,7 @@ fn legacy_providers() -> Vec<Provider> {
         meeting_args: None,
         manager_args: None,
         observer_args: None,
+        planner_args: None,
         worker_timeout_seconds: None,
         idle_timeout_seconds: None,
     }]

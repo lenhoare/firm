@@ -46,6 +46,7 @@ async fn harness() -> Harness {
         meeting_args: None,
         manager_args: None,
         observer_args: None,
+        planner_args: None,
         worker_timeout_seconds: None,
         idle_timeout_seconds: None,
     }];

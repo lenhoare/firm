@@ -245,44 +245,7 @@ impl Board {
         base_commit: &str,
         integration_branch: &str,
     ) -> Result<()> {
-        ensure!(
-            !spec.objective.trim().is_empty() && spec.objective.len() <= 12000,
-            "Objective must contain 1-12000 bytes"
-        );
-        ensure!(
-            !spec.tasks.is_empty() && spec.tasks.len() <= 200,
-            "A run needs 1-200 tasks"
-        );
-        let mut ids = BTreeSet::new();
-        for task in &spec.tasks {
-            ensure!(
-                !task.id.trim().is_empty()
-                    && task.id.len() <= 64
-                    && task
-                        .id
-                        .bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'),
-                "Invalid task id: {}",
-                task.id
-            );
-            ensure!(ids.insert(task.id.clone()), "Duplicate task id: {}", task.id);
-            ensure!(
-                !task.title.trim().is_empty() && !task.brief.trim().is_empty(),
-                "Task {} needs a title and a brief",
-                task.id
-            );
-        }
-        for task in &spec.tasks {
-            for dependency in &task.depends_on {
-                ensure!(
-                    ids.contains(dependency),
-                    "Task {} depends on unknown task {dependency}",
-                    task.id
-                );
-                ensure!(dependency != &task.id, "Task {} depends on itself", task.id);
-            }
-        }
-        detect_cycle(&spec.tasks)?;
+        validate_graph(spec)?;
 
         let transaction = self.conn.transaction()?;
         transaction.execute(
@@ -579,6 +542,52 @@ fn add_column(conn: &Connection, table: &str, column: &str, definition: &str) ->
             "ALTER TABLE {table} ADD COLUMN {column} {definition}"
         ))?;
     }
+    Ok(())
+}
+
+
+/// Validate an authored graph. Unknown dependencies, duplicate ids and cycles are
+/// authoring errors, and a run that cannot finish should never start. Public so a manager's
+/// proposed graph can be checked before it becomes a run.
+pub fn validate_graph(spec: &RunSpec) -> Result<()> {
+    ensure!(
+            !spec.objective.trim().is_empty() && spec.objective.len() <= 12000,
+            "Objective must contain 1-12000 bytes"
+        );
+    ensure!(
+            !spec.tasks.is_empty() && spec.tasks.len() <= 200,
+            "A run needs 1-200 tasks"
+        );
+        let mut ids = BTreeSet::new();
+    for task in &spec.tasks {
+        ensure!(
+                !task.id.trim().is_empty()
+                    && task.id.len() <= 64
+                    && task
+                        .id
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'),
+                "Invalid task id: {}",
+                task.id
+            );
+        ensure!(ids.insert(task.id.clone()), "Duplicate task id: {}", task.id);
+        ensure!(
+                !task.title.trim().is_empty() && !task.brief.trim().is_empty(),
+                "Task {} needs a title and a brief",
+                task.id
+            );
+    }
+    for task in &spec.tasks {
+        for dependency in &task.depends_on {
+        ensure!(
+                    ids.contains(dependency),
+                    "Task {} depends on unknown task {dependency}",
+                    task.id
+                );
+        ensure!(dependency != &task.id, "Task {} depends on itself", task.id);
+        }
+    }
+    detect_cycle(&spec.tasks)?;
     Ok(())
 }
 

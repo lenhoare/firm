@@ -236,15 +236,23 @@ discover and cheap to fix once the graph can change.** Execution surfaces plan d
 free: a wrong dependency appears as a blocked task, a missing task as a failing integration
 check. Investing in correctability beats investing in first-shot plan quality.
 
-### Decomposition
+### Decomposition — implemented
 
-One manager call at run start produces the graph; a human approves it before execution.
-`--tasks` remains the escape hatch, and is what the manager's output is written as.
+`firm plan --brief BRIEF.md` makes one planning call and writes the graph as the JSON
+`--tasks` accepts; a person reads it before anything runs. Validation runs each proposed
+check against the workspace as it is now, and reports any that cannot execute or that
+already pass.
 
-The graph is validated before it is accepted, and validation includes **running each
-proposed `verify` command**. A manager inventing a check that does not compile, or that
-passes vacuously, is worse than no check at all — and acceptance criteria are exactly where
-arithmetic and shell quoting go wrong.
+Two things this needed that were not obvious:
+
+- A planner needs its **own invocation** (`planner_args`). A CLI's plan mode produces a
+  plan artifact rather than a direct answer, and a schema-constrained reply is produced
+  immediately without exploring. It needs read-only tools, room to look at the workspace,
+  and then a plain answer.
+- **Idle detection had to be disabled** for it. That check assumes a streaming event log;
+  a planning invocation emits nothing until it has finished thinking, so silence is work,
+  not a hang. The first attempt killed a planner that was busy confirming its own checks
+  failed.
 
 ### Allocation from evidence, not self-report
 

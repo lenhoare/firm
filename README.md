@@ -32,6 +32,7 @@ branch. Passing alone is not enough: the scorer runs again after merging, and wo
 breaks the integration is reverted.
 
 ```sh
+firm plan --brief BRIEF.md --out tasks.json --config firm.parallel.toml      # plan from a brief
 firm board --tasks examples/tasks.parallel.json --config firm.parallel.toml  # run a task graph
 firm board --config firm.parallel.toml            # report on the last run
 firm board --watch --config firm.parallel.toml    # follow a run live, in another terminal
@@ -56,9 +57,23 @@ create and this repository ignores:
 - `firm.trial.toml` — the task-board exercise, three modules in a dependency chain, Muse
   only. Sequential by construction; it tests the chain, not concurrency.
 
-Task graphs are authored as JSON: see `examples/tasks.parallel.json`. Each task has an id,
-a brief, acceptance criteria, optional `depends_on`, an optional `verify` command and an
-optional pinned `provider`.
+Work starts from a **written brief**. `firm plan` gives it to the planner
+(`planner`, default `grok`, using that provider's read-only `planner_args`), which reads
+the workspace and returns a task graph — one model call, not one per unit of work.
+
+The graph is validated before you see it, and validation **runs each proposed check**
+against the workspace as it is now. A check that cannot execute would fail every attempt; a
+check that already passes would merge everything unconditionally. Both are reported, and
+both are worse than no check at all:
+
+```
+  slug             fails now, as it should  exit 101  cargo test --offline --test slug
+  roman            fails now, as it should  exit 101  cargo test --offline --test roman
+```
+
+The result is written as the same JSON `--tasks` accepts, so you read and edit it before
+anything runs — the human checkpoint is that file. Graphs can still be hand-authored: see
+`examples/tasks.parallel.json`.
 
 - The workspace must be a **clean git repository**. Your own branch is never modified; each
   run works on `firm/run-<id>` and each attempt on `firm/attempt-<id>`.

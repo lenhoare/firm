@@ -12,6 +12,7 @@
 pub mod board;
 pub mod dispatch;
 pub mod forum;
+pub mod plan;
 pub mod scorer;
 pub mod worktree;
 

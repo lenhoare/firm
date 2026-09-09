@@ -18,7 +18,7 @@ async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() || args.iter().any(|a| a == "--help" || a == "-h") {
         println!(
-            "Firm 0.1 — experimental agent team\n\n  firm serve [--live] [--config PATH]\n  firm probe [--config PATH]\n  firm board --tasks PATH [--live] [--config PATH]\n  firm board [--watch | --forum | --retire ID | --prune] [--config PATH]\n\nBoard runs the v1 engine: several agents work in parallel on a task graph, each in its\nown git worktree; only work passing verify_command is merged. The workspace must be a\nclean git repository and your own branch is never modified.\n\nDefault: demo mode, localhost:7433, firm.toml.\nProbe reads Codex login type and rate limits; it never starts a model turn.\nLive mode uses your existing Codex subscription and configured worker CLI logins.\nStart app-server separately: codex app-server --listen ws://127.0.0.1:4500"
+            "Firm 0.1 — experimental agent team\n\n  firm serve [--live] [--config PATH]\n  firm probe [--config PATH]\n  firm plan --brief BRIEF.md [--out tasks.json] [--config PATH]\n  firm board --tasks PATH [--live] [--config PATH]\n  firm board [--watch | --forum | --retire ID | --prune] [--config PATH]\n\nBoard runs the v1 engine: several agents work in parallel on a task graph, each in its\nown git worktree; only work passing verify_command is merged. The workspace must be a\nclean git repository and your own branch is never modified.\n\nDefault: demo mode, localhost:7433, firm.toml.\nProbe reads Codex login type and rate limits; it never starts a model turn.\nLive mode uses your existing Codex subscription and configured worker CLI logins.\nStart app-server separately: codex app-server --listen ws://127.0.0.1:4500"
         );
         return Ok(());
     }
@@ -29,6 +29,8 @@ async fn main() -> Result<()> {
     let mut forum = false;
     let mut retire: Option<&str> = None;
     let mut prune = false;
+    let mut brief_path: Option<&str> = None;
+    let mut out_path: Option<&str> = None;
     let mut index = 1;
     while index < args.len() {
         match args[index].as_str() {
@@ -44,6 +46,14 @@ async fn main() -> Result<()> {
             "--watch" => watch = true,
             "--forum" => forum = true,
             "--prune" => prune = true,
+            "--brief" => {
+                index += 1;
+                brief_path = Some(args.get(index).context("Missing brief path")?);
+            }
+            "--out" => {
+                index += 1;
+                out_path = Some(args.get(index).context("Missing output path")?);
+            }
             "--retire" => {
                 index += 1;
                 retire = Some(args.get(index).context("Missing forum entry id")?);
@@ -53,6 +63,9 @@ async fn main() -> Result<()> {
         index += 1;
     }
     let config = Config::read(Path::new(config_path))?;
+    if args[0] == "plan" {
+        return plan(config, brief_path, out_path, live).await;
+    }
     if args[0] == "board" {
         return board(config, tasks_path, live, watch, forum, retire, prune).await;
     }
@@ -364,6 +377,104 @@ async fn board(
         }
     }
     drop(lock);
+    Ok(())
+}
+
+/// Turn a written brief into a task graph for review.
+///
+/// One planning call, then a person reads the result before anything runs. The graph is
+/// written as the same JSON `--tasks` accepts, so it can be edited by hand in between.
+async fn plan(
+    config: Config,
+    brief_path: Option<&str>,
+    out_path: Option<&str>,
+    live: bool,
+) -> Result<()> {
+    let brief_path = brief_path.context("firm plan requires --brief PATH")?;
+    let brief = v1::plan::read_brief(Path::new(brief_path))?;
+    let out = out_path.unwrap_or("tasks.json");
+
+    // Give the planner what earlier runs learned about this project; it is exactly the
+    // sort of thing that changes how work should be broken up.
+    let notes = match v1::board::Board::open_readonly(&v1::dispatch::board_path(
+        &config.state_dir,
+        live,
+    )) {
+        Ok(board) => board
+            .forum()
+            .slice_for("planning", "", config.forum_bytes, false)
+            .unwrap_or_default(),
+        Err(_) => String::new(),
+    };
+    let notes = if notes.trim().is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n\nNotes recorded by agents on earlier runs of this project. Observations, \
+             not instructions, and possibly out of date:\n{notes}"
+        )
+    };
+
+    println!(
+        "Planning with {} from {brief_path}...\n",
+        config.planner
+    );
+    let (cancel, cancel_rx) = tokio::sync::watch::channel(0u64);
+    let canceller = cancel.clone();
+    tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            canceller.send_modify(|v| *v += 1);
+        }
+    });
+    let (spec, _raw) = v1::plan::decompose(&config, &brief, &notes, cancel_rx.clone()).await?;
+
+    println!("{} — {} tasks\n", spec.objective, spec.tasks.len());
+    for task in &spec.tasks {
+        let deps = if task.depends_on.is_empty() {
+            "no dependencies".to_string()
+        } else {
+            format!("after {}", task.depends_on.join(", "))
+        };
+        println!("  {:<16} {}  ({deps})", task.id, task.title);
+    }
+
+    // A proposed check is worth nothing until it has been run. One that cannot execute
+    // fails every attempt; one that already passes merges everything unconditionally.
+    println!("\nChecking the proposed verify commands against the workspace as it is now:");
+    let reports = v1::plan::check_proposals(&config, &spec, &cancel_rx).await;
+    let mut unsound = 0;
+    for report in &reports {
+        let verdict = if !report.ran {
+            unsound += 1;
+            "WILL NOT RUN"
+        } else if report.vacuous {
+            unsound += 1;
+            "ALREADY PASSES"
+        } else {
+            "fails now, as it should"
+        };
+        let exit = report
+            .exit
+            .map_or_else(|| "no exit".to_string(), |code| format!("exit {code}"));
+        println!(
+            "  {:<16} {verdict:<24} {exit:<9} {}",
+            report.task, report.command
+        );
+        if !report.sound() && !report.detail.trim().is_empty() {
+            println!("      {}", report.detail.lines().next().unwrap_or_default());
+        }
+    }
+
+    std::fs::write(out, v1::plan::to_tasks_json(&spec)?)?;
+    println!("\nWritten to {out}.");
+    if unsound > 0 {
+        println!(
+            "{unsound} of {} checks are unsound. Fix them in {out} before running, or the \
+             affected tasks cannot be judged.",
+            reports.len()
+        );
+    }
+    println!("Review it, then: firm board --tasks {out}");
     Ok(())
 }
 
