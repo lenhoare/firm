@@ -34,6 +34,28 @@ impl CheckReport {
     }
 }
 
+/// Guards a plan leaves switched off. A task with no declared `files` can change anything,
+/// and a test-writing task with no `must_fail` could write a test that asserts nothing —
+/// neither is an error, but neither should be silent.
+pub fn ungarded(spec: &RunSpec) -> Vec<String> {
+    let mut warnings = Vec::new();
+    for task in &spec.tasks {
+        if task.files.is_empty() {
+            warnings.push(format!(
+                "{} declares no file scope, so it may change anything",
+                task.id
+            ));
+        }
+        if task.class == "test" && task.must_fail.as_ref().is_none_or(|c| c.is_empty()) {
+            warnings.push(format!(
+                "{} writes tests but gives no must_fail, so a test that asserts nothing would pass",
+                task.id
+            ));
+        }
+    }
+    warnings
+}
+
 /// Ask the planner to decompose a brief into a graph. Returns the parsed graph and the
 /// raw reply, which is kept so a refusal or a malformed answer can be inspected.
 pub async fn decompose(
@@ -101,6 +123,12 @@ fn prompt(config: &Config, brief: &str, notes: &str) -> String {
            passes proves nothing.\n\
          - `verify` is an argv array, executed directly with no shell: \
            [\"cargo\", \"test\", \"--offline\", \"--test\", \"parser\"], never a single string.\n\
+         - `files` is required on every task: exactly the files it may modify. Anything else it changes \
+           is rejected, which is what stops one task quietly editing another's work — or a \
+           task editing the test it is supposed to satisfy.\n\
+         - A task that writes a test must also give `must_fail`: a command that must still \
+           fail once the test exists, because the code it tests has not been written. A new \
+           test that passes against unimplemented code asserts nothing.\n\
          - Do not assign providers. Routing chooses from {providers:?}.\n\
          - If the project cannot be split this way — one monolithic test target, shared \
            fixtures, or no tests at all — say so by making the first task the one that \
@@ -110,8 +138,9 @@ fn prompt(config: &Config, brief: &str, notes: &str) -> String {
          Reply with JSON only, no prose and no markdown fence:\n\
          {{\"objective\": \"...\", \"tasks\": [{{\"id\": \"short-slug\", \"title\": \"...\", \
          \"brief\": \"what to do, which files, and any constraint\", \
-         \"acceptance\": [\"...\"], \"verify\": [\"...\"], \"depends_on\": [], \
-         \"class\": \"implement\"}}]}}\n\n\
+         \"acceptance\": [\"...\"], \"verify\": [\"...\"], \"files\": [\"src/thing.rs\"], \
+         \"depends_on\": [], \"class\": \"implement\"}}]}}\n\
+         A test-writing task adds \"must_fail\": [\"cargo\", \"test\", \"--test\", \"thing\"].\n\n\
          Ids are lowercase slugs, unique, and referenced by depends_on. Class is one of \
          design, implement, test, review, docs, integrate.\n\n\
          --- brief ---\n{brief}\n--- end brief ---{notes}",
@@ -342,6 +371,8 @@ tokens used
             class: "implement".into(),
             provider: None,
             verify: verify.map(|v| v.iter().map(|s| (*s).to_string()).collect()),
+            files: Vec::new(),
+            must_fail: None,
         };
         let spec = RunSpec {
             objective: "o".into(),

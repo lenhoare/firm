@@ -577,6 +577,18 @@ impl Engine {
             return Ok(());
         }
 
+        // What a task is allowed to touch. Without this the obvious way to pass a test you
+        // cannot satisfy is to edit the test, and nothing would notice.
+        if let Some(stray) = out_of_scope(task, &record.files_changed, &self.config.scope_exempt) {
+            record.state = AttemptState::Rejected;
+            record.passed = Some(false);
+            record.detail = format!(
+                "Changed {stray}, which this task may not touch. Allowed: {}",
+                task.files.join(", ")
+            );
+            return Ok(());
+        }
+
         // A task-scoped check where one is given, so focused work is not judged by
         // failures belonging to tasks that have not been done yet.
         let verdict = scorer.score(&workspace.path, self.cancel.clone()).await?;
@@ -586,6 +598,28 @@ impl Engine {
         if !verdict.passed {
             record.state = AttemptState::Rejected;
             return Ok(());
+        }
+
+        // A task that writes a test proves the test tests something: the named command
+        // must still fail against code that has not been written yet. A new test which
+        // passes against an unimplemented module asserts nothing, and accepting it would
+        // let the team grade itself with a blank exam.
+        if let Some(command) = task.must_fail.as_ref().filter(|c| !c.is_empty()) {
+            let probe = Scorer::Command {
+                command: command.clone(),
+                timeout_seconds: config.allowances.worker_timeout_seconds,
+            };
+            let outcome = probe.score(&workspace.path, self.cancel.clone()).await?;
+            if outcome.passed {
+                record.state = AttemptState::Rejected;
+                record.passed = Some(false);
+                record.detail = format!(
+                    "`{}` already passes, so this proves nothing: a test that succeeds \
+                     against unimplemented code is not testing it",
+                    command.join(" ")
+                );
+                return Ok(());
+            }
         }
 
         // Serialised: only one attempt merges at a time.
@@ -902,6 +936,31 @@ impl Engine {
             },
         )
     }
+}
+
+/// The first changed file a task was not allowed to touch, if any.
+///
+/// Matching is by exact path or by directory prefix, so `tests/` covers everything under
+/// it. Build lockfiles are exempt: a tool can rewrite one incidentally, and failing a
+/// task for that would be a false accusation.
+fn out_of_scope(
+    task: &super::board::Task,
+    changed: &[String],
+    exempt: &[String],
+) -> Option<String> {
+    if task.files.is_empty() {
+        return None;
+    }
+    changed
+        .iter()
+        .find(|file| {
+            !exempt.iter().any(|e| e == *file)
+                && !task.files.iter().any(|allowed| {
+                    allowed == *file
+                        || (allowed.ends_with('/') && file.starts_with(allowed.as_str()))
+                })
+        })
+        .cloned()
 }
 
 pub fn clip(text: &str, limit: usize) -> String {

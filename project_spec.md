@@ -409,6 +409,35 @@ language.
 6. Compete mode.
 7. Claude added to the roster by configuration.
 
+## Judging work the team also specified
+
+Where a project has no test seam, the planner creates one — which means agents write the
+tests that later agents are judged by. The trial that established this had a human-written
+acceptance suite above the agent-written seams, so the risk was bounded. On a real project
+it may not be, and two structural guards apply rather than trusting the arrangement:
+
+- **Declared file scope.** A task names the files it may modify; an attempt that changes
+  anything else is rejected. The obvious way to pass a test you cannot satisfy is to edit
+  the test, and `files_changed` was already recorded and never acted upon.
+- **Proof that a test tests something.** A test-writing task names a command that must
+  still fail once the test exists. A test that passes against unimplemented code asserts
+  nothing.
+
+Both are model-free and cost nothing per run. A third measure — routing test-writing to a
+different provider than implementation, as class affinity in the roster — reduces
+correlated error but is weaker than it appears, for the same reason ensemble agreement is:
+models share priors. It is worth doing and is mostly configuration.
+
+Neither removes the underlying limitation: when agent-written tests sit at the top of the
+chain, nothing establishes that they encode what was actually wanted. The human checkpoint
+at `firm plan` is the answer, and seam tasks are a distinct early layer that is worth
+reading.
+
+Compliance was the practical obstacle. Asked for `files` as a rule in prose, the planner
+omitted it entirely; stated as a requirement, with the field in the example, it emitted
+scope and proof-of-failure for every task. Optional-looking fields get dropped — the same
+lesson as asking workers to self-report.
+
 ## Learned from running it
 
 Recorded here because each contradicted an assumption in this document:

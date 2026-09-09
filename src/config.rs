@@ -34,6 +34,10 @@ pub struct Config {
     /// usage takes seconds per provider, so it happens twice per run, never per call.
     #[serde(default = "yes")]
     pub record_usage: bool,
+    /// Files a task may change without declaring them. A build tool can rewrite a lockfile
+    /// incidentally, and rejecting an attempt for that would be a false accusation.
+    #[serde(default = "lockfiles")]
+    pub scope_exempt: Vec<String>,
     /// Hard cap on the forum slice injected into a worker's prompt. An unbounded forum
     /// poisons every prompt.
     #[serde(default = "default_forum_bytes")]
@@ -64,6 +68,12 @@ fn one() -> usize {
 
 fn yes() -> bool {
     true
+}
+
+fn lockfiles() -> Vec<String> {
+    ["Cargo.lock", "package-lock.json", "poetry.lock", "go.sum"]
+        .map(String::from)
+        .to_vec()
 }
 
 #[cfg(test)]

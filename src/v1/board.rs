@@ -88,6 +88,16 @@ pub struct TaskSpec {
     /// Pin this task to one provider. Left unset, routing chooses (v1 milestone 3).
     #[serde(default)]
     pub provider: Option<String>,
+    /// Files this task may modify. Declared, an attempt that touches anything else is
+    /// rejected — which is what stops an implementer quietly editing the test it cannot
+    /// pass. Left empty, nothing is enforced.
+    #[serde(default)]
+    pub files: Vec<String>,
+    /// A command that must still **fail** for this task's work to be accepted. A task that
+    /// writes a test uses it to prove the test actually tests something: a new test that
+    /// passes against unimplemented code is not a test.
+    #[serde(default)]
+    pub must_fail: Option<Vec<String>>,
     /// A check scoped to this task, run instead of the run-level scorer. Essential in
     /// partition mode: while other tasks are still stubs the whole suite necessarily
     /// fails, so judging one task by it would reject perfectly good focused work.
@@ -116,6 +126,8 @@ pub struct Task {
     pub class: String,
     pub provider: Option<String>,
     pub verify: Option<Vec<String>>,
+    pub files: Vec<String>,
+    pub must_fail: Option<Vec<String>>,
     pub state: TaskState,
     pub attempts: usize,
     pub note: String,
@@ -228,7 +240,7 @@ impl Board {
         conn.execute_batch(
             "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
             CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, objective TEXT NOT NULL, base_commit TEXT NOT NULL, integration_branch TEXT NOT NULL, created_at INTEGER NOT NULL, finished_at INTEGER);
-            CREATE TABLE IF NOT EXISTS tasks (id TEXT NOT NULL, run_id TEXT NOT NULL, title TEXT NOT NULL, brief TEXT NOT NULL, acceptance TEXT NOT NULL, depends_on TEXT NOT NULL, class TEXT NOT NULL, provider TEXT, verify TEXT, state TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, note TEXT NOT NULL DEFAULT '', PRIMARY KEY (run_id, id));
+            CREATE TABLE IF NOT EXISTS tasks (id TEXT NOT NULL, run_id TEXT NOT NULL, title TEXT NOT NULL, brief TEXT NOT NULL, acceptance TEXT NOT NULL, depends_on TEXT NOT NULL, class TEXT NOT NULL, provider TEXT, verify TEXT, files TEXT NOT NULL DEFAULT '[]', must_fail TEXT, state TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, note TEXT NOT NULL DEFAULT '', PRIMARY KEY (run_id, id));
             CREATE TABLE IF NOT EXISTS attempts (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, task_id TEXT NOT NULL, provider TEXT NOT NULL, branch TEXT NOT NULL, base_commit TEXT NOT NULL, started_at INTEGER NOT NULL, finished_at INTEGER, native_exit INTEGER, interruption TEXT, passed INTEGER, score REAL, detail TEXT NOT NULL DEFAULT '', files_changed TEXT NOT NULL DEFAULT '[]', output TEXT NOT NULL DEFAULT '', activity TEXT NOT NULL DEFAULT '', observation TEXT NOT NULL DEFAULT '', state TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS attempts_task ON attempts(run_id, task_id);
             CREATE INDEX IF NOT EXISTS attempts_usage ON attempts(provider, started_at);
@@ -241,6 +253,8 @@ impl Board {
         // after a board was created must be migrated in explicitly.
         add_column(&conn, "attempts", "activity", "TEXT NOT NULL DEFAULT ''")?;
         add_column(&conn, "attempts", "observation", "TEXT NOT NULL DEFAULT ''")?;
+        add_column(&conn, "tasks", "files", "TEXT NOT NULL DEFAULT '[]'")?;
+        add_column(&conn, "tasks", "must_fail", "TEXT")?;
         super::forum::Forum::initialize(&conn)?;
         Ok(Self { conn })
     }
@@ -292,7 +306,7 @@ impl Board {
         )?;
         for task in &spec.tasks {
             transaction.execute(
-                "INSERT INTO tasks(id,run_id,title,brief,acceptance,depends_on,class,provider,verify,state) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                "INSERT INTO tasks(id,run_id,title,brief,acceptance,depends_on,class,provider,verify,files,must_fail,state) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
                 params![
                     task.id,
                     id,
@@ -303,6 +317,8 @@ impl Board {
                     task.class,
                     task.provider,
                     task.verify.as_ref().map(serde_json::to_string).transpose()?,
+                    serde_json::to_string(&task.files)?,
+                    task.must_fail.as_ref().map(serde_json::to_string).transpose()?,
                     TaskState::Open.as_str()
                 ],
             )?;
@@ -340,7 +356,7 @@ impl Board {
 
     pub fn tasks(&self, run_id: &str) -> Result<Vec<Task>> {
         let mut query = self.conn.prepare(
-            "SELECT id,run_id,title,brief,acceptance,depends_on,class,provider,verify,state,attempts,note FROM tasks WHERE run_id=?1 ORDER BY rowid",
+            "SELECT id,run_id,title,brief,acceptance,depends_on,class,provider,verify,files,must_fail,state,attempts,note FROM tasks WHERE run_id=?1 ORDER BY rowid",
         )?;
         let rows = query.query_map([run_id], |r| {
             Ok((
@@ -354,8 +370,10 @@ impl Board {
                 r.get::<_, Option<String>>(7)?,
                 r.get::<_, Option<String>>(8)?,
                 r.get::<_, String>(9)?,
-                r.get::<_, usize>(10)?,
+                r.get::<_, Option<String>>(10)?,
                 r.get::<_, String>(11)?,
+                r.get::<_, usize>(12)?,
+                r.get::<_, String>(13)?,
             ))
         })?;
         rows.map(|row| {
@@ -370,9 +388,11 @@ impl Board {
                 class: row.6,
                 provider: row.7,
                 verify: row.8.map(|v| serde_json::from_str(&v)).transpose()?,
-                state: TaskState::parse(&row.9)?,
-                attempts: row.10,
-                note: row.11,
+                files: serde_json::from_str(&row.9)?,
+                must_fail: row.10.map(|v| serde_json::from_str(&v)).transpose()?,
+                state: TaskState::parse(&row.11)?,
+                attempts: row.12,
+                note: row.13,
             })
         })
         .collect()
@@ -550,13 +570,15 @@ impl Board {
                 .map_err(|e| e.to_string())?;
 
                 self.conn.execute(
-                    "INSERT INTO tasks(id,run_id,title,brief,acceptance,depends_on,class,provider,verify,state) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                    "INSERT INTO tasks(id,run_id,title,brief,acceptance,depends_on,class,provider,verify,files,must_fail,state) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
                     params![
                         task.id, run_id, task.title, task.brief,
                         serde_json::to_string(&task.acceptance).unwrap_or_default(),
                         serde_json::to_string(&task.depends_on).unwrap_or_default(),
                         task.class, task.provider,
                         task.verify.as_ref().map(|v| serde_json::to_string(v).unwrap_or_default()),
+                        serde_json::to_string(&task.files).unwrap_or_else(|_| "[]".into()),
+                        task.must_fail.as_ref().map(|v| serde_json::to_string(v).unwrap_or_default()),
                         TaskState::Open.as_str()
                     ],
                 ).map_err(|e| e.to_string())?;
@@ -772,6 +794,8 @@ fn task_to_spec(task: &Task) -> TaskSpec {
         class: task.class.clone(),
         provider: task.provider.clone(),
         verify: task.verify.clone(),
+        files: task.files.clone(),
+        must_fail: task.must_fail.clone(),
     }
 }
 
@@ -895,6 +919,8 @@ mod tests {
             class: implement(),
             provider: None,
             verify: None,
+            files: Vec::new(),
+            must_fail: None,
         }
     }
     fn board() -> (tempfile::TempDir, Board) {

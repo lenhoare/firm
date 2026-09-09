@@ -91,6 +91,14 @@ anything runs — the human checkpoint is that file. Graphs can still be hand-au
   cheapest provider that has both allowance and a free slot, so work fills the cheap tier
   and **spills to the next** rather than queueing behind a busy provider. A task may still
   pin itself to one provider.
+- A task declares in `files` what it may modify, and an attempt that changes anything else
+  is rejected. Without it, the obvious way to pass a test you cannot satisfy is to edit the
+  test — and nothing would notice. Lockfiles are exempt, since a build tool can rewrite one
+  incidentally.
+- A task that writes a test declares `must_fail`: a command that must **still fail** once
+  the test exists, because the code it tests has not been written yet. A new test that
+  passes against unimplemented code asserts nothing. `firm plan` reports any task that
+  leaves either guard off, so an inactive guard is never silent.
 - A task is retried once, then failed; anything depending on it is blocked, not stalled. A
   retry is told why the previous attempt was rejected, and is shown notes about its own
   task — which a first attempt is not.

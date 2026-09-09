@@ -70,6 +70,8 @@ fn task(id: &str, brief: &str, depends_on: &[&str]) -> TaskSpec {
         class: "implement".into(),
         provider: Some("fake".into()),
         verify: None,
+        files: Vec::new(),
+        must_fail: None,
     }
 }
 
@@ -212,6 +214,92 @@ async fn a_task_its_dependencies_already_satisfied_is_not_failed_for_doing_nothi
         quiet["detail"].as_str().unwrap().contains("already passes"),
         "{:?}",
         quiet["detail"]
+    );
+}
+
+#[tokio::test]
+async fn an_agent_that_edits_a_file_outside_its_scope_is_rejected() {
+    // The obvious way to pass a test you cannot satisfy is to edit the test. Declared
+    // scope makes that a rejection rather than something nobody notices.
+    let mut harness = harness().await;
+    harness.config.forum_observer = String::new();
+    let mut scoped = task("scoped", "CREATE:forbidden.txt", &[]);
+    scoped.files = vec!["allowed.txt".into()];
+    scoped.verify = Some(vec!["sh".into(), "-c".into(), "test -f forbidden.txt".into()]);
+
+    let spec = RunSpec {
+        objective: "Stay in your lane".into(),
+        tasks: vec![scoped],
+    };
+    let (run_id, board) = drive(&harness, spec).await;
+
+    let tasks = board.tasks(&run_id).unwrap();
+    assert_eq!(tasks[0].state, TaskState::Failed, "{}", tasks[0].note);
+    let attempts = board.attempts(&run_id).unwrap();
+    assert_eq!(attempts[0]["state"], "rejected");
+    let detail = attempts[0]["detail"].as_str().unwrap();
+    assert!(detail.contains("forbidden.txt"), "{detail}");
+    assert!(detail.contains("may not touch"), "{detail}");
+}
+
+#[tokio::test]
+async fn a_declared_file_and_an_exempt_lockfile_are_both_allowed() {
+    let mut harness = harness().await;
+    harness.config.forum_observer = String::new();
+    let mut scoped = task("scoped", "CREATE:allowed.txt", &[]);
+    scoped.files = vec!["allowed.txt".into()];
+    let spec = RunSpec {
+        objective: "Declared files are fine".into(),
+        tasks: vec![scoped],
+    };
+    let (run_id, board) = drive(&harness, spec).await;
+    assert_eq!(board.tasks(&run_id).unwrap()[0].state, TaskState::Merged);
+}
+
+#[tokio::test]
+async fn a_test_that_passes_against_unwritten_code_is_rejected() {
+    // A new test which already succeeds asserts nothing. Without this the team can write
+    // its own exam and leave it blank.
+    let mut harness = harness().await;
+    harness.config.forum_observer = String::new();
+    let mut seam = task("seam", "CREATE:seam.txt", &[]);
+    seam.verify = Some(vec!["sh".into(), "-c".into(), "test -f seam.txt".into()]);
+    // The proof-of-failure command succeeds, so the "test" demonstrates nothing.
+    seam.must_fail = Some(vec!["true".into()]);
+
+    let spec = RunSpec {
+        objective: "A test must actually test something".into(),
+        tasks: vec![seam],
+    };
+    let (run_id, board) = drive(&harness, spec).await;
+
+    assert_eq!(board.tasks(&run_id).unwrap()[0].state, TaskState::Failed);
+    let detail = board.attempts(&run_id).unwrap()[0]["detail"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(detail.contains("proves nothing"), "{detail}");
+}
+
+#[tokio::test]
+async fn a_test_that_genuinely_fails_first_is_accepted() {
+    let mut harness = harness().await;
+    harness.config.forum_observer = String::new();
+    let mut seam = task("seam", "CREATE:seam.txt", &[]);
+    seam.verify = Some(vec!["sh".into(), "-c".into(), "test -f seam.txt".into()]);
+    // Still fails, because the thing it checks for has not been built.
+    seam.must_fail = Some(vec!["sh".into(), "-c".into(), "test -f not-built-yet".into()]);
+
+    let spec = RunSpec {
+        objective: "A real test is accepted".into(),
+        tasks: vec![seam],
+    };
+    let (run_id, board) = drive(&harness, spec).await;
+    assert_eq!(
+        board.tasks(&run_id).unwrap()[0].state,
+        TaskState::Merged,
+        "{}",
+        board.tasks(&run_id).unwrap()[0].note
     );
 }
 

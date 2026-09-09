@@ -567,6 +567,14 @@ async fn plan(
         }
     }
 
+    let unguarded = v1::plan::ungarded(&spec);
+    if !unguarded.is_empty() {
+        println!("\nGuards this plan leaves off:");
+        for warning in &unguarded {
+            println!("  {warning}");
+        }
+    }
+
     std::fs::write(out, v1::plan::to_tasks_json(&spec)?)?;
     println!("\nWritten to {out}.");
     if unsound > 0 {
