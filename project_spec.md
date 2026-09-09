@@ -462,23 +462,35 @@ A clean stop — Ctrl+C, and now SIGTERM and SIGHUP, since a closed terminal or 
 previously killed the controller outright — lets the agent's work be committed before the
 interruption is recorded. An unclean stop gives no such chance, so `--resume` first
 rescues anything left uncommitted in an abandoned attempt worktree onto its branch. Either
-way the work ends up on a branch, and attempt branches outlive their worktrees. It is not
-reused automatically — a half-finished attempt is
-a poor starting point, and the task starts again cleanly — but `--resume` lists it so it can
-be inspected or cherry-picked.
+way the work ends up on a branch, and attempt branches outlive their worktrees.
 
 `--resume` continues a run on its own branch. Reconciliation on open returns any task left
 `running` to the queue and closes its attempt as interrupted, which also keeps the ledger
 honest: an attempt that never finished is not evidence about a provider. v0 had this
 property explicitly on restart and v1 had dropped it.
 
-Agent CLIs do keep their own resumable sessions from headless runs — qwen has
-`--continue`, `--resume` and even `--session-id`, muse has `resume`, and grok writes a
-session directory per working directory. Firm deliberately does not use them. Each attempt
-gets a fresh worktree and a fresh session, with the previous rejection passed in the
-prompt, because resuming would carry forward the reasoning that was rejected, point at a
-worktree that has since been deleted, and make attempts conditional on each other — which
-would spoil the ledger as a record and foreclose compete mode.
+Agent CLIs keep their own resumable sessions from headless runs — qwen takes
+`--session-id` and `--resume`, muse `exec --session-id`, and grok `--continue` against a
+session directory keyed by working directory. Whether Firm uses them turns on **why** an
+attempt ended, and the two cases are opposites.
+
+A **rejected** attempt is a judgement: a check found fault with the work. It starts again
+from a fresh worktree and a fresh session with the rejection in its prompt, because
+resuming would carry forward the very reasoning that failed, and would make attempts
+conditional on each other — spoiling the ledger as a record and foreclosing compete mode.
+
+An **interrupted** attempt is not a judgement. Nobody found fault with it; it was stopped,
+by the operator or a power cut, part-way through work whose context was expensive to build.
+That is the `claude --continue` case, and Firm treats it as one. The attempt keeps its
+worktree, its branch, its identity in the ledger and its session id, and `--resume` puts
+the same agent back into the same working directory with the provider's `resume_args` and
+a prompt that says only that it was stopped and should carry on. Continuing is not a second
+attempt: the dispatch's own reservation is given up, so the ledger shows one attempt that
+took two sittings rather than two attempts against a provider's record.
+
+This is per-provider and opt-in: without `resume_args`, a provider simply starts the task
+again. The identity a session needs is Firm's own attempt id, passed as `{session_id}`, so
+the session and the attempt row are the same thing by construction.
 
 ## Learned from running it
 

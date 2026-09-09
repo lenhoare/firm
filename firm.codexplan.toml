@@ -28,6 +28,7 @@ args = ["exec", "--model", "{codex_model}", "--sandbox", "workspace-write", "--a
 
 [[providers]]
 id = "grok"
+resume_args = ["--prompt-file", "{prompt_file}", "--cwd", "{workspace}", "--output-format", "streaming-json", "--permission-mode", "bypassPermissions", "--deny", "MCPTool(telegram__*)", "--no-subagents", "--continue", "--max-turns", "{max_turns}"]
 planner_args = ["--prompt-file", "{prompt_file}", "--cwd", "{workspace}", "--no-subagents", "--disable-web-search", "--tools", "list_dir,read_file,grep", "--max-turns", "40"]
 worker_timeout_seconds = 300
 idle_timeout_seconds = 60
@@ -49,6 +50,7 @@ args = ["--prompt-file", "{prompt_file}", "--cwd", "{workspace}", "--output-form
 
 [[providers]]
 id = "qwen"
+resume_args = ["--prompt", "Carry out the assignment supplied on stdin.", "--output-format", "stream-json", "--approval-mode", "yolo", "--resume", "{session_id}"]
 worker_timeout_seconds = 900
 idle_timeout_seconds = 120
 tier = 0
@@ -61,10 +63,11 @@ enabled = true
 max_runs = 40
 description = "General-purpose coding worker;"
 input = "stdin"
-args = ["--prompt", "Carry out the assignment supplied on stdin.", "--output-format", "stream-json", "--approval-mode", "yolo", "--max-session-turns", "{max_turns}", "--max-tool-calls", "{max_tool_calls}", "--max-wall-time", "{timeout_seconds}s"]
+args = ["--prompt", "Carry out the assignment supplied on stdin.", "--output-format", "stream-json", "--approval-mode", "yolo", "--session-id", "{session_id}", "--max-session-turns", "{max_turns}", "--max-tool-calls", "{max_tool_calls}", "--max-wall-time", "{timeout_seconds}s"]
 
 [[providers]]
 id = "muse"
+resume_args = ["exec", "--prompt-file", "{prompt_file}", "--workspace", "{workspace}", "--approval-mode", "never", "--approval-judge", "off", "--disable-sandbox", "--json", "--session-id", "{session_id}", "--max-model-steps", "{max_turns}"]
 worker_timeout_seconds = 900
 idle_timeout_seconds = 120
 tier = 0
@@ -77,7 +80,7 @@ enabled = true
 max_runs = 40
 description = "Alternative coding worker; use for implementation or an independent perspective. Model steps are capped; no CLI tool-call count cap."
 input = "prompt_file"
-args = ["exec", "--prompt-file", "{prompt_file}", "--workspace", "{workspace}", "--approval-mode", "never", "--approval-judge", "off", "--disable-sandbox", "--json", "--max-model-steps", "{max_turns}"]
+args = ["exec", "--prompt-file", "{prompt_file}", "--workspace", "{workspace}", "--approval-mode", "never", "--approval-judge", "off", "--disable-sandbox", "--json", "--session-id", "{session_id}", "--max-model-steps", "{max_turns}"]
 
 [allowances]
 manager_turns = 4

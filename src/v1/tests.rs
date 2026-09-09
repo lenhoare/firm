@@ -48,6 +48,7 @@ async fn harness() -> Harness {
         manager_args: None,
         observer_args: None,
         planner_args: None,
+        resume_args: None,
         worker_timeout_seconds: None,
         idle_timeout_seconds: None,
     }];
@@ -429,6 +430,76 @@ async fn pausing_mid_task_keeps_what_the_agent_had_already_written() {
     let task = &board.tasks(&run_id).unwrap()[0];
     assert_ne!(task.state, TaskState::Merged);
     assert!(!task.state.terminal(), "left resumable, not failed: {:?}", task.state);
+}
+
+#[tokio::test]
+async fn an_interrupted_attempt_carries_on_rather_than_starting_over() {
+    // Stopping an agent is not a judgement on its work. Resuming keeps the context it had
+    // built and the partial work already in its worktree, exactly as reloading a session
+    // does for a person.
+    let mut harness = harness().await;
+    harness.config.forum_observer = String::new();
+    harness.config.providers[0].resume_args = Some(vec!["--resumed".into()]);
+    let script = harness.config.providers[0].command.clone();
+    // First invocation writes half the work and hangs. On resume — recognisable by the
+    // flag — it finds its own earlier work and completes the job.
+    std::fs::write(
+        &script,
+        "#!/bin/sh\ncat > /dev/null\ncase \"$*\" in\n  *--resumed*)\n    test -f half.txt && echo done > whole.txt\n    exit 0 ;;\nesac\necho half > half.txt\necho '{\"payload_type\":\"working\"}'\nsleep 300\n",
+    )
+    .unwrap();
+
+    let mut first = task("long", "carry on where you left off", &[]);
+    first.verify = Some(vec!["sh".into(), "-c".into(), "test -f whole.txt".into()]);
+    let spec = RunSpec {
+        objective: "Continue interrupted work".into(),
+        tasks: vec![first],
+    };
+
+    // Start, then stop everything while the agent is mid-task.
+    let board = Board::open(&harness.board_path).unwrap();
+    let (cancel, rx) = watch::channel(0);
+    let (engine, run_id) = Engine::create(harness.config.clone(), board, scorer(), rx, &spec)
+        .await
+        .unwrap();
+    let engine = Arc::new(engine);
+    let driving = {
+        let engine = Arc::clone(&engine);
+        let run = run_id.clone();
+        tokio::spawn(async move { engine.drive(&run).await })
+    };
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    cancel.send_modify(|v| *v += 1);
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(60), driving).await;
+
+    let board = Board::open(&harness.board_path).unwrap();
+    let attempts = board.attempts(&run_id).unwrap();
+    assert_eq!(attempts[0]["state"], "interrupted", "stopped, not judged");
+    let first_id = attempts[0]["id"].as_str().unwrap().to_string();
+    assert!(
+        board.resumable(&run_id, "long").unwrap().is_some(),
+        "its worktree is kept so the work can be continued"
+    );
+
+    // Resume: the agent should find its own half-finished work and finish it.
+    let (_tx, rx) = watch::channel(0);
+    let engine = Engine::attach(harness.config.clone(), board, scorer(), rx, &run_id)
+        .await
+        .unwrap();
+    Arc::new(engine).drive(&run_id).await.unwrap();
+
+    let board = Board::open(&harness.board_path).unwrap();
+    assert_eq!(
+        board.tasks(&run_id).unwrap()[0].state,
+        TaskState::Merged,
+        "{}",
+        board.tasks(&run_id).unwrap()[0].note
+    );
+    let attempts = board.attempts(&run_id).unwrap();
+    assert_eq!(attempts.len(), 1, "the same attempt continued, not a second one");
+    assert_eq!(attempts[0]["id"].as_str().unwrap(), first_id);
+    let files = attempts[0]["files_changed"].as_array().unwrap();
+    assert_eq!(files.len(), 2, "both halves of the work are there: {files:?}");
 }
 
 #[tokio::test]

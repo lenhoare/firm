@@ -57,6 +57,9 @@ pub enum AttemptState {
     Running,
     Verified,
     Rejected,
+    /// Stopped by the operator or a signal, never judged. Its worktree and CLI session are
+    /// kept so the work can be continued rather than begun again.
+    Interrupted,
     Error,
 }
 
@@ -66,6 +69,7 @@ impl AttemptState {
             Self::Running => "running",
             Self::Verified => "verified",
             Self::Rejected => "rejected",
+            Self::Interrupted => "interrupted",
             Self::Error => "error",
         }
     }
@@ -281,7 +285,7 @@ impl Board {
             "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
             CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, objective TEXT NOT NULL, base_commit TEXT NOT NULL, integration_branch TEXT NOT NULL, created_at INTEGER NOT NULL, finished_at INTEGER);
             CREATE TABLE IF NOT EXISTS tasks (id TEXT NOT NULL, run_id TEXT NOT NULL, title TEXT NOT NULL, brief TEXT NOT NULL, acceptance TEXT NOT NULL, depends_on TEXT NOT NULL, class TEXT NOT NULL, provider TEXT, verify TEXT, files TEXT NOT NULL DEFAULT '[]', must_fail TEXT, state TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, note TEXT NOT NULL DEFAULT '', PRIMARY KEY (run_id, id));
-            CREATE TABLE IF NOT EXISTS attempts (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, task_id TEXT NOT NULL, provider TEXT NOT NULL, branch TEXT NOT NULL, base_commit TEXT NOT NULL, started_at INTEGER NOT NULL, finished_at INTEGER, native_exit INTEGER, interruption TEXT, passed INTEGER, score REAL, detail TEXT NOT NULL DEFAULT '', files_changed TEXT NOT NULL DEFAULT '[]', output TEXT NOT NULL DEFAULT '', activity TEXT NOT NULL DEFAULT '', observation TEXT NOT NULL DEFAULT '', state TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS attempts (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, task_id TEXT NOT NULL, provider TEXT NOT NULL, branch TEXT NOT NULL, base_commit TEXT NOT NULL, started_at INTEGER NOT NULL, finished_at INTEGER, native_exit INTEGER, interruption TEXT, passed INTEGER, score REAL, detail TEXT NOT NULL DEFAULT '', files_changed TEXT NOT NULL DEFAULT '[]', output TEXT NOT NULL DEFAULT '', activity TEXT NOT NULL DEFAULT '', observation TEXT NOT NULL DEFAULT '', worktree TEXT NOT NULL DEFAULT '', state TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS attempts_task ON attempts(run_id, task_id);
             CREATE INDEX IF NOT EXISTS attempts_usage ON attempts(provider, started_at);
             CREATE TABLE IF NOT EXISTS cooldowns (provider TEXT PRIMARY KEY, until INTEGER NOT NULL);
@@ -295,6 +299,7 @@ impl Board {
         add_column(&conn, "attempts", "observation", "TEXT NOT NULL DEFAULT ''")?;
         add_column(&conn, "tasks", "files", "TEXT NOT NULL DEFAULT '[]'")?;
         add_column(&conn, "tasks", "must_fail", "TEXT")?;
+        add_column(&conn, "attempts", "worktree", "TEXT NOT NULL DEFAULT ''")?;
         super::forum::Forum::initialize(&conn)?;
         Ok(Self { conn })
     }
@@ -446,7 +451,7 @@ impl Board {
     /// attempt that never finished is not evidence about a provider.
     pub fn reconcile(&mut self, run_id: &str) -> Result<usize> {
         let attempts = self.conn.execute(
-            "UPDATE attempts SET state='error', finished_at=?2, interruption='Interrupted when the controller stopped' WHERE run_id=?1 AND state='running'",
+            "UPDATE attempts SET state='interrupted', finished_at=?2, interruption='Interrupted when the controller stopped' WHERE run_id=?1 AND state='running'",
             params![run_id, now()],
         )?;
         let tasks = self.conn.execute(
@@ -537,6 +542,54 @@ impl Board {
             params![attempt.id, attempt.run_id, attempt.task_id, attempt.provider, attempt.branch, attempt.base_commit, attempt.started_at, attempt.state.as_str()],
         )?;
         Ok(())
+    }
+
+    /// Put an interrupted attempt back into flight, so a watcher sees it working again
+    /// rather than still stopped.
+    pub fn resume_attempt(&mut self, attempt_id: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE attempts SET state='running', finished_at=NULL, interruption=NULL WHERE id=?1",
+            params![attempt_id],
+        )?;
+        Ok(())
+    }
+
+    /// Give up a reservation without recording an attempt. Used when a dispatch turns out
+    /// to be the continuation of an interrupted attempt, which keeps its own row.
+    pub fn drop_reservation(&mut self, attempt_id: &str) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM attempts WHERE id=?1 AND state='running' AND finished_at IS NULL",
+            params![attempt_id],
+        )?;
+        Ok(())
+    }
+
+    /// Where an attempt is working, so an interrupted one can be found again.
+    pub fn set_worktree(&mut self, attempt_id: &str, path: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE attempts SET worktree=?2 WHERE id=?1",
+            params![attempt_id, path],
+        )?;
+        Ok(())
+    }
+
+    /// The attempt to continue for a task, if its last one was interrupted and its
+    /// worktree is still on disk.
+    pub fn resumable(&self, run_id: &str, task_id: &str) -> Result<Option<(String, String)>> {
+        Ok(self
+            .conn
+            .query_row(
+                // The attempt now being dispatched already has a reserved row, so only
+                // finished attempts are candidates to be continued.
+                "SELECT id,worktree,state FROM attempts WHERE run_id=?1 AND task_id=?2 AND finished_at IS NOT NULL ORDER BY started_at DESC, rowid DESC LIMIT 1",
+                params![run_id, task_id],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)),
+            )
+            .optional()?
+            .and_then(|(id, worktree, state)| {
+                (state == "interrupted" && !worktree.is_empty() && Path::new(&worktree).exists())
+                    .then_some((id, worktree))
+            }))
     }
 
     pub fn finish_attempt(&mut self, attempt: &Attempt) -> Result<()> {

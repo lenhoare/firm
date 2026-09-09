@@ -211,6 +211,18 @@ pub fn prepare_prompt_in(
     prompt: String,
     workspace: std::path::PathBuf,
 ) -> Result<Prepared> {
+    prepare_session(config, provider, prompt, workspace, "")
+}
+
+/// As above, but naming the CLI session so the same conversation can be continued later.
+/// Providers that support it put `{session_id}` in their arguments; the rest ignore it.
+pub fn prepare_session(
+    config: &Config,
+    provider: &Provider,
+    prompt: String,
+    workspace: std::path::PathBuf,
+    session_id: &str,
+) -> Result<Prepared> {
     use std::io::Write;
     anyhow::ensure!(
         provider.enabled,
@@ -247,6 +259,7 @@ pub fn prepare_prompt_in(
             .replace("{codex_model}", &config.codex_model)
             .replace("{workspace}", &workspace.to_string_lossy())
             .replace("{prompt_file}", &file_path)
+            .replace("{session_id}", session_id)
         })
         .collect();
     Ok(Prepared {

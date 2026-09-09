@@ -170,6 +170,12 @@ pub struct Provider {
     pub worker_timeout_seconds: Option<u64>,
     #[serde(default)]
     pub idle_timeout_seconds: Option<u64>,
+    /// How to continue an attempt that was interrupted rather than rejected. An
+    /// interruption is not a judgement: the agent's context was expensively built and
+    /// nothing found fault with it, so resuming is cheaper and keeps its train of thought.
+    /// `{session_id}` is the attempt's id. Absent, an interrupted task simply starts again.
+    #[serde(default)]
+    pub resume_args: Option<Vec<String>>,
     /// Read-only exploration invocation for planning. Distinct from `manager_args`
     /// because a CLI's plan mode produces a plan artifact rather than a direct answer;
     /// the planner must explore, then reply. Falls back to `manager_args` when unset.
@@ -222,6 +228,7 @@ fn legacy_providers() -> Vec<Provider> {
         manager_args: None,
         observer_args: None,
         planner_args: None,
+        resume_args: None,
         worker_timeout_seconds: None,
         idle_timeout_seconds: None,
     }]

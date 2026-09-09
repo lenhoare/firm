@@ -450,23 +450,63 @@ impl Engine {
         from: String,
     ) -> Result<()> {
         // Branch from the integration tip so dependencies already merged are present.
-        let workspace = self.trees.create_attempt(&attempt_id, &from).await?;
+        // Continue an attempt the operator stopped, rather than starting the work again:
+        // its context was expensively built and nothing found fault with it.
+        let resumable = self
+            .board
+            .lock()
+            .await
+            .resumable(run_id, &task.id)
+            .unwrap_or(None)
+            .filter(|_| provider.resume_args.is_some());
+        // A continued attempt keeps its own branch and worktree: its half-finished work is
+        // committed there, and a new branch cut from the integration tip would not have it.
+        let (workspace, resuming) = match &resumable {
+            Some((previous, path)) => (
+                super::worktree::Attempt {
+                    branch: super::worktree::attempt_branch(previous),
+                    path: std::path::PathBuf::from(path),
+                    base_commit: from.clone(),
+                },
+                true,
+            ),
+            None => (self.trees.create_attempt(&attempt_id, &from).await?, false),
+        };
         let mut record = Attempt::reserved(
-            attempt_id,
+            attempt_id.clone(),
             run_id,
             &task.id,
             &provider.id,
             workspace.branch.clone(),
             from,
         );
+        // Reuse the interrupted attempt's identity so its CLI session and branch continue.
+        // This dispatch's own reservation is given up: continuing is not a second attempt,
+        // and leaving the row behind would strand it as running for ever.
+        if let Some((previous, _)) = &resumable {
+            record.id = previous.clone();
+            record.branch = super::worktree::attempt_branch(previous);
+            let mut board = self.board.lock().await;
+            board.drop_reservation(&attempt_id)?;
+            board.resume_attempt(&record.id)?;
+        }
+
+        self.board
+            .lock()
+            .await
+            .set_worktree(&record.id, &workspace.path.to_string_lossy())?;
 
         let outcome = self
-            .execute(task, provider, &workspace, &mut record)
+            .execute(task, provider, &workspace, &mut record, resuming)
             .await;
 
         record.finished_at = Some(now());
         if let Err(error) = &outcome {
-            record.state = AttemptState::Error;
+            record.state = if self.cancel.has_changed().unwrap_or(false) {
+                AttemptState::Interrupted
+            } else {
+                AttemptState::Error
+            };
             // An agent stopped part-way may still have written something worth keeping. It
             // was committed to this attempt's branch before the interruption, and the
             // branch outlives the worktree — say so, or nobody will ever look.
@@ -499,8 +539,17 @@ impl Engine {
         // observation is disabled, over budget, or fails.
         self.record_outcome(run_id, task, &record).await;
 
-        // The worktree goes; the branch stays as evidence of what was actually written.
-        let _ = self.trees.discard(&workspace).await;
+        // An interrupted attempt keeps its worktree and its CLI session, so it can be
+        // continued. Everything else is finished with, and only the branch is needed.
+        if record.state == AttemptState::Interrupted {
+            let _ = self
+                .board
+                .lock()
+                .await
+                .set_worktree(&record.id, &workspace.path.to_string_lossy());
+        } else {
+            let _ = self.trees.discard(&workspace).await;
+        }
 
         let (state, note) = match (&outcome, record.state) {
             (Ok(()), AttemptState::Verified) => (TaskState::Merged, record.detail.clone()),
@@ -544,6 +593,7 @@ impl Engine {
         provider: &Provider,
         workspace: &super::worktree::Attempt,
         record: &mut Attempt,
+        resuming: bool,
     ) -> Result<()> {
         // A place for the agent to leave notes for the team, beside its worktree rather
         // than inside it. Optional: most attempts will ignore it, and that is fine.
@@ -582,8 +632,27 @@ impl Engine {
         if let Some(limit) = provider.idle_timeout_seconds {
             config.allowances.idle_timeout_seconds = limit;
         }
-        let prepared =
-            worker::prepare_prompt_in(&config, provider, prompt, workspace.path.clone())?;
+        // A resumed attempt continues its own CLI session, so it is not told the task
+        // again from scratch — only that it was stopped and should carry on.
+        let mut provider = provider.clone();
+        let prompt = if resuming {
+            if let Some(args) = provider.resume_args.clone() {
+                provider.args = args;
+            }
+            format!(
+                "You were interrupted part-way through this task and are now continuing. \
+                 Pick up where you left off; the work you had already done is still here.\n\n{prompt}"
+            )
+        } else {
+            prompt
+        };
+        let prepared = worker::prepare_session(
+            &config,
+            &provider,
+            prompt,
+            workspace.path.clone(),
+            &record.id,
+        )?;
 
         // Look in on the agent while it works, and record what it is doing so a watcher
         // can see it. This is also what makes the idle timeout meaningful.
@@ -625,7 +694,7 @@ impl Engine {
         // Anything the agent chose to leave for the team. Deliberately outside the
         // worktree: a shared file inside it would be committed, would conflict between
         // concurrent attempts, and would muddy the record of which files a task touched.
-        self.collect_worker_notes(&record.run_id, task, provider, &notes_path)
+        self.collect_worker_notes(&record.run_id, task, &provider, &notes_path)
             .await;
 
         // Commit whatever exists even when the agent exited badly: a run that failed or
