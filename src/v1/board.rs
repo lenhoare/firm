@@ -438,6 +438,33 @@ impl Board {
         .collect()
     }
 
+    /// Put a stopped run back into a state it can continue from.
+    ///
+    /// A task left `running` has no agent behind it any more — the process died with the
+    /// controller — so it returns to `open` to be dispatched again. Its attempt is closed
+    /// as interrupted rather than left hanging, which also keeps the ledger honest: an
+    /// attempt that never finished is not evidence about a provider.
+    pub fn reconcile(&mut self, run_id: &str) -> Result<usize> {
+        let attempts = self.conn.execute(
+            "UPDATE attempts SET state='error', finished_at=?2, interruption='Interrupted when the controller stopped' WHERE run_id=?1 AND state='running'",
+            params![run_id, now()],
+        )?;
+        let tasks = self.conn.execute(
+            "UPDATE tasks SET state=?2, note=?3 WHERE run_id=?1 AND state=?4",
+            params![
+                run_id,
+                TaskState::Open.as_str(),
+                "Returned to the queue after the controller stopped",
+                TaskState::Running.as_str()
+            ],
+        )?;
+        self.conn.execute(
+            "UPDATE runs SET finished_at=NULL WHERE id=?1",
+            params![run_id],
+        )?;
+        Ok(attempts.max(tasks))
+    }
+
     /// Tasks whose dependencies have all merged. A task whose dependency failed or
     /// blocked can never run, so it is blocked here rather than waiting forever.
     pub fn ready(&mut self, run_id: &str) -> Result<Vec<Task>> {

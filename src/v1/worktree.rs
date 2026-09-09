@@ -97,6 +97,53 @@ impl Worktrees {
         ))
     }
 
+    /// Reattach to a run that already exists, so it can be continued.
+    ///
+    /// Its integration worktree may have been pruned since; the branch is what matters and
+    /// the working directory is recreated from it. The workspace must still be clean —
+    /// resuming into a tree someone has edited would merge onto an unexpected base.
+    pub async fn attach(
+        repo: &Path,
+        root: &Path,
+        run_id: &str,
+        integration_branch: &str,
+    ) -> Result<Self> {
+        let dirty = git(repo, &["status", "--porcelain"]).await?;
+        ensure!(
+            dirty.is_empty(),
+            "Commit or stash the workspace before resuming.\n{dirty}"
+        );
+        git(repo, &["rev-parse", "--verify", integration_branch])
+            .await
+            .with_context(|| format!("The run's branch {integration_branch} no longer exists"))?;
+
+        let short = &run_id[..8];
+        let root = root.join(format!("run-{short}"));
+        std::fs::create_dir_all(&root)?;
+        let integration_path = root.join("integration");
+        if !integration_path.join(".git").exists() {
+            // Pruned, or never created here. Recreate it from the branch.
+            let _ = git(repo, &["worktree", "prune"]).await;
+            git(
+                repo,
+                &[
+                    "worktree",
+                    "add",
+                    &integration_path.to_string_lossy(),
+                    integration_branch,
+                ],
+            )
+            .await
+            .context("Could not recreate the integration worktree")?;
+        }
+        Ok(Self {
+            repo: repo.to_path_buf(),
+            root,
+            integration_branch: integration_branch.to_string(),
+            integration_path,
+        })
+    }
+
     pub fn integration_path(&self) -> &Path {
         &self.integration_path
     }

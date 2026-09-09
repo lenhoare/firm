@@ -449,6 +449,26 @@ omitted it entirely; stated as a requirement, with the field in the example, it 
 scope and proof-of-failure for every task. Optional-looking fields get dropped — the same
 lesson as asking workers to self-report.
 
+## Stopping a long run
+
+Chunking was never the problem: each task is its own attempt, worktree and merge, so work
+lands incrementally and everything merged is a commit on the run's branch. Resuming was.
+Every run minted a fresh run id and branch, so a stopped run could not be continued — the
+work survived, but only by starting again and redoing it.
+
+`--resume` continues a run on its own branch. Reconciliation on open returns any task left
+`running` to the queue and closes its attempt as interrupted, which also keeps the ledger
+honest: an attempt that never finished is not evidence about a provider. v0 had this
+property explicitly on restart and v1 had dropped it.
+
+Agent CLIs do keep their own resumable sessions from headless runs — qwen has
+`--continue`, `--resume` and even `--session-id`, muse has `resume`, and grok writes a
+session directory per working directory. Firm deliberately does not use them. Each attempt
+gets a fresh worktree and a fresh session, with the previous rejection passed in the
+prompt, because resuming would carry forward the reasoning that was rejected, point at a
+worktree that has since been deleted, and make attempts conditional on each other — which
+would spoil the ledger as a record and foreclose compete mode.
+
 ## Learned from running it
 
 Recorded here because each contradicted an assumption in this document:

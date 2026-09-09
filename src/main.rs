@@ -18,7 +18,7 @@ async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() || args.iter().any(|a| a == "--help" || a == "-h") {
         println!(
-            "Firm 0.1 — experimental agent team\n\n  firm serve [--live] [--config PATH]\n  firm probe [--config PATH]\n  firm usage                                 (what has been spent, and current allowances)\n  firm usage --provider ID (--percent N | --tokens N) [--label TEXT] [--run ID]\n  firm plan --brief BRIEF.md [--out tasks.json] [--config PATH]\n  firm board --tasks PATH [--live] [--config PATH]\n  firm board [--watch | --forum | --retire ID | --prune | --stats] [--config PATH]\n  firm board --tasks PATH --provider ID   (force one provider, for comparisons)\n\nBoard runs the v1 engine: several agents work in parallel on a task graph, each in its\nown git worktree; only work passing verify_command is merged. The workspace must be a\nclean git repository and your own branch is never modified.\n\nDefault: demo mode, localhost:7433, firm.toml.\nProbe reads Codex login type and rate limits; it never starts a model turn.\nLive mode uses your existing Codex subscription and configured worker CLI logins.\nStart app-server separately: codex app-server --listen ws://127.0.0.1:4500"
+            "Firm 0.1 — experimental agent team\n\n  firm serve [--live] [--config PATH]\n  firm probe [--config PATH]\n  firm usage                                 (what has been spent, and current allowances)\n  firm usage --provider ID (--percent N | --tokens N) [--label TEXT] [--run ID]\n  firm plan --brief BRIEF.md [--out tasks.json] [--config PATH]\n  firm board --tasks PATH [--live] [--config PATH]\n  firm board --resume RUN|latest             (continue a run that was stopped)\n  firm board [--watch | --forum | --retire ID | --prune | --stats] [--config PATH]\n  firm board --tasks PATH --provider ID   (force one provider, for comparisons)\n\nBoard runs the v1 engine: several agents work in parallel on a task graph, each in its\nown git worktree; only work passing verify_command is merged. The workspace must be a\nclean git repository and your own branch is never modified.\n\nDefault: demo mode, localhost:7433, firm.toml.\nProbe reads Codex login type and rate limits; it never starts a model turn.\nLive mode uses your existing Codex subscription and configured worker CLI logins.\nStart app-server separately: codex app-server --listen ws://127.0.0.1:4500"
         );
         return Ok(());
     }
@@ -30,6 +30,7 @@ async fn main() -> Result<()> {
     let mut retire: Option<&str> = None;
     let mut prune = false;
     let mut stats = false;
+    let mut resume: Option<&str> = None;
     let mut brief_path: Option<&str> = None;
     let mut out_path: Option<&str> = None;
     let mut provider: Option<&str> = None;
@@ -53,6 +54,10 @@ async fn main() -> Result<()> {
             "--forum" => forum = true,
             "--prune" => prune = true,
             "--stats" => stats = true,
+            "--resume" => {
+                index += 1;
+                resume = Some(args.get(index).context("Missing run id, or 'latest'")?);
+            }
             "--provider" => {
                 index += 1;
                 provider = Some(args.get(index).context("Missing provider id")?);
@@ -108,6 +113,7 @@ async fn main() -> Result<()> {
                 prune,
                 stats,
                 force_provider: provider,
+                resume,
             },
         )
         .await;
@@ -252,6 +258,7 @@ struct BoardOptions<'a> {
     prune: bool,
     stats: bool,
     force_provider: Option<&'a str>,
+    resume: Option<&'a str>,
 }
 
 async fn board(config: Config, options: BoardOptions<'_>) -> Result<()> {
@@ -264,6 +271,7 @@ async fn board(config: Config, options: BoardOptions<'_>) -> Result<()> {
         prune,
         stats,
         force_provider,
+        resume,
     } = options;
     let board_path = v1::dispatch::board_path(&config.state_dir, live);
     if prune {
@@ -337,6 +345,9 @@ async fn board(config: Config, options: BoardOptions<'_>) -> Result<()> {
         return watch_run(&board_path, &config.workspace).await;
     }
     // With no task file, report on the most recent run instead of starting one.
+    if let Some(target) = resume {
+        return resume_run(config, live, target, force_provider).await;
+    }
     let Some(tasks_path) = tasks_path else {
         let board = v1::board::Board::open_readonly(&board_path)?;
         let run_id = board
@@ -388,58 +399,22 @@ async fn board(config: Config, options: BoardOptions<'_>) -> Result<()> {
     let started = std::time::Instant::now();
     let printer = tokio::spawn(async move {
         while let Some(event) = events.recv().await {
-            let at = elapsed(started.elapsed().as_secs());
-            match event {
-                v1::dispatch::Progress::Dispatched { task, provider } => {
-                    println!("  [{at:>6}] → {task:<12} dispatched to {provider}");
-                }
-                v1::dispatch::Progress::Attempt {
-                    task,
-                    provider,
-                    state,
-                    seconds,
-                    native_exit,
-                    passed,
-                    files,
-                    detail,
-                } => {
-                    println!(
-                        "  [{at:>6}] {} {task:<12} {provider} {} in {} · exit {} · check {}{}",
-                        if state == v1::board::AttemptState::Verified { "✓" } else { "✗" },
-                        state.as_str(),
-                        elapsed(seconds),
-                        native_exit.map_or("–".to_string(), |c| c.to_string()),
-                        match passed {
-                            Some(true) => "passed",
-                            Some(false) => "failed",
-                            None => "not run",
-                        },
-                        if files.is_empty() {
-                            String::new()
-                        } else {
-                            format!(" · {}", files.join(", "))
-                        }
-                    );
-                    if state != v1::board::AttemptState::Verified && !detail.trim().is_empty() {
-                        println!("            {}", detail.lines().next().unwrap_or_default());
-                    }
-                }
-                v1::dispatch::Progress::Task { task, state, note } => match state.as_str() {
-                    "merged" => println!("  [{at:>6}] ✓ {task:<12} merged into the integration branch"),
-                    "running" | "open" => {}
-                    other => println!(
-                        "  [{at:>6}] ✗ {task:<12} {other} — {}",
-                        note.lines().next().unwrap_or_default()
-                    ),
-                },
-            }
+            print_progress(event, started);
         }
     });
 
+    // Stopping must be safe and reversible: everything merged is already a commit on the
+    // run's branch, and the run can be picked up where it left off.
+    let canceller = cancel.clone();
+    let stop_id = run_id.clone();
     tokio::spawn(async move {
         if tokio::signal::ctrl_c().await.is_ok() {
-            eprintln!("\nStopping: agents are cancelled and no further work is dispatched.");
-            cancel.send_modify(|v| *v += 1);
+            eprintln!(
+                "\nStopping. Work already merged is safe on the run branch; continue with:\n  \
+                 firm board --resume {}",
+                &stop_id[..8]
+            );
+            canceller.send_modify(|v| *v += 1);
         }
     });
 
@@ -718,6 +693,134 @@ async fn plan(
     }
     println!("Review it, then: firm board --tasks {out}");
     Ok(())
+}
+
+/// One line of run progress, shared by a fresh run and a resumed one.
+fn print_progress(event: v1::dispatch::Progress, started: std::time::Instant) {
+    let at = elapsed(started.elapsed().as_secs());
+    match event {
+        v1::dispatch::Progress::Dispatched { task, provider } => {
+            println!("  [{at:>6}] → {task:<12} dispatched to {provider}");
+        }
+        v1::dispatch::Progress::Attempt {
+            task,
+            provider,
+            state,
+            seconds,
+            native_exit,
+            passed,
+            files,
+            detail,
+        } => {
+            println!(
+                "  [{at:>6}] {} {task:<12} {provider} {} in {} · exit {} · check {}{}",
+                if state == v1::board::AttemptState::Verified { "✓" } else { "✗" },
+                state.as_str(),
+                elapsed(seconds),
+                native_exit.map_or("–".to_string(), |c| c.to_string()),
+                match passed {
+                    Some(true) => "passed",
+                    Some(false) => "failed",
+                    None => "not run",
+                },
+                if files.is_empty() {
+                    String::new()
+                } else {
+                    format!(" · {}", files.join(", "))
+                }
+            );
+            if state != v1::board::AttemptState::Verified && !detail.trim().is_empty() {
+                println!("            {}", detail.lines().next().unwrap_or_default());
+            }
+        }
+        v1::dispatch::Progress::Task { task, state, note } => match state.as_str() {
+            "merged" => println!("  [{at:>6}] ✓ {task:<12} merged into the integration branch"),
+            "running" | "open" => {}
+            other => println!(
+                "  [{at:>6}] ✗ {task:<12} {other} — {}",
+                note.lines().next().unwrap_or_default()
+            ),
+        },
+    }
+}
+
+/// Continue a run that was stopped, rather than starting the work again.
+///
+/// Everything already merged stays merged: the run keeps its integration branch, and only
+/// tasks still outstanding are dispatched. Work interrupted mid-flight returns to the queue.
+async fn resume_run(
+    config: Config,
+    live: bool,
+    target: &str,
+    force_provider: Option<&str>,
+) -> Result<()> {
+    let board_path = v1::dispatch::board_path(&config.state_dir, live);
+    let run_id = {
+        let board = v1::board::Board::open_readonly(&board_path)?;
+        if target == "latest" {
+            board.latest_run()?.context("No runs to resume")?
+        } else {
+            board.run(target).map(|run| run.id)?
+        }
+    };
+
+    let board = v1::board::Board::open(&board_path)?;
+    let (cancel, cancel_rx) = tokio::sync::watch::channel(0u64);
+    let scorer = v1::scorer::Scorer::Command {
+        command: config.verify_command.clone(),
+        timeout_seconds: config.allowances.worker_timeout_seconds,
+    };
+    let workspace = config.workspace.clone();
+    let state_dir = config.state_dir.clone();
+    let engine =
+        v1::dispatch::Engine::attach(config, board, scorer, cancel_rx, &run_id).await?;
+
+    let board = v1::board::Board::open_readonly(&board_path)?;
+    let outstanding = board
+        .tasks(&run_id)?
+        .into_iter()
+        .filter(|t| !t.state.terminal())
+        .count();
+    drop(board);
+    println!(
+        "Resuming run {} — {outstanding} task(s) still outstanding.\n",
+        &run_id[..8]
+    );
+    if outstanding == 0 {
+        println!("Nothing left to do.");
+        return Ok(());
+    }
+
+    let (progress, mut events) = tokio::sync::mpsc::unbounded_channel();
+    let engine = std::sync::Arc::new(
+        engine
+            .with_progress(progress)
+            .with_forced_provider(force_provider.map(str::to_string)),
+    );
+    let started = std::time::Instant::now();
+    let printer = tokio::spawn(async move {
+        while let Some(event) = events.recv().await {
+            print_progress(event, started);
+        }
+    });
+    let canceller = cancel.clone();
+    let stop_id = run_id.clone();
+    tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            eprintln!(
+                "\nStopping. Merged work is safe on the run branch; continue with:\n  \
+                 firm board --resume {}",
+                &stop_id[..8]
+            );
+            canceller.send_modify(|v| *v += 1);
+        }
+    });
+
+    engine.drive(&run_id).await?;
+    drop(engine);
+    let _ = printer.await;
+    let board = v1::board::Board::open(&v1::dispatch::board_path(&state_dir, live))?;
+    summarise(&board, &run_id, &workspace)
 }
 
 /// Remove the checked-out integration worktrees of finished runs.

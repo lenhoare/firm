@@ -304,6 +304,76 @@ async fn a_test_that_genuinely_fails_first_is_accepted() {
 }
 
 #[tokio::test]
+async fn a_stopped_run_resumes_without_redoing_finished_work() {
+    // Stopping a long run must be safe *and* reversible. Work already merged stays merged,
+    // work caught mid-flight returns to the queue, and the rest is picked up.
+    let mut harness = harness().await;
+    harness.config.forum_observer = String::new();
+    harness.config.allowances.worker_runs = 1; // only the first task can run
+
+    let spec = RunSpec {
+        objective: "Stop, then carry on".into(),
+        tasks: vec![
+            task("first", "CREATE:first.txt", &[]),
+            task("second", "CREATE:second.txt", &[]),
+        ],
+    };
+    let board = Board::open(&harness.board_path).unwrap();
+    let (_tx, rx) = watch::channel(0);
+    let (engine, run_id) = Engine::create(harness.config.clone(), board, scorer(), rx, &spec)
+        .await
+        .unwrap();
+    let branch = {
+        let engine = Arc::new(engine);
+        let outcome = engine.drive(&run_id).await.unwrap();
+        assert_eq!(outcome.merged, 1, "the allowance stopped it after one");
+        assert_eq!(outcome.held, 1);
+        Board::open(&harness.board_path)
+            .unwrap()
+            .run(&run_id)
+            .unwrap()
+            .integration_branch
+    };
+
+    // Simulate an agent caught mid-flight when the controller stopped.
+    let mut board = Board::open(&harness.board_path).unwrap();
+    board.set_state(&run_id, "second", TaskState::Running, "in flight").unwrap();
+
+    // Now with allowance restored, resume rather than start again.
+    harness.config.allowances.worker_runs = 50;
+    let (_tx, rx) = watch::channel(0);
+    let engine = Engine::attach(harness.config.clone(), board, scorer(), rx, &run_id)
+        .await
+        .unwrap();
+    Arc::new(engine).drive(&run_id).await.unwrap();
+
+    let board = Board::open(&harness.board_path).unwrap();
+    let tasks = board.tasks(&run_id).unwrap();
+    for task in &tasks {
+        assert_eq!(task.state, TaskState::Merged, "{} — {}", task.id, task.note);
+    }
+    assert_eq!(
+        board.run(&run_id).unwrap().integration_branch,
+        branch,
+        "the same branch is continued, not a new one"
+    );
+    // The finished task was not attempted a second time.
+    let attempts = board.attempts(&run_id).unwrap();
+    let first_attempts = attempts.iter().filter(|a| a["task_id"] == "first").count();
+    assert_eq!(first_attempts, 1, "merged work is not redone");
+
+    // Both files are present on the branch: the first from before the stop.
+    let listing = git(
+        &harness.workspace_path,
+        &["ls-tree", "-r", "--name-only", &branch],
+    )
+    .await
+    .unwrap();
+    assert!(listing.contains("first.txt"), "{listing}");
+    assert!(listing.contains("second.txt"), "{listing}");
+}
+
+#[tokio::test]
 async fn a_worker_can_leave_a_note_for_the_team() {
     let mut harness = harness().await;
     harness.config.forum_observer = String::new();

@@ -39,6 +39,7 @@ firm board --watch --config firm.parallel.toml    # follow a run live, in anothe
 firm board --forum --config firm.parallel.toml    # read what the agents have learned
 firm board --retire ID --config firm.parallel.toml # take a stale entry out of circulation
 firm board --prune --config firm.parallel.toml    # reclaim finished runs' worktrees
+firm board --resume latest --config firm.parallel.toml   # continue a run that was stopped
 firm board --stats --config firm.parallel.toml   # what routing has learned about each provider
 firm usage --config firm.parallel.toml           # what has been spent, and current allowances
 ```
@@ -127,6 +128,11 @@ anything runs — the human checkpoint is that file. Graphs can still be hand-au
   `worker_timeout_seconds` and `idle_timeout_seconds`, falling back to the run's
   allowances. Grok reliably finishes in well under a minute; muse ranges from 30s to
   several minutes and has hung outright, so one global limit was too crude for both.
+- **A long run is safe to stop.** Ctrl+C cancels the agents and prints the command to
+  continue. Everything already merged is a commit on the run's branch, so nothing is lost,
+  and `--resume` picks the same run up on the same branch: finished tasks are not redone,
+  and work caught mid-flight returns to the queue rather than being left stranded. A hard
+  kill is handled the same way, reconciled when the run is next opened.
 - Each run leaves a checked-out integration worktree, around 48 MiB for a small Rust
   crate. `--prune` removes those of finished runs, keeping the most recent; every run's
   work stays on its `firm/run-<id>` branch regardless.

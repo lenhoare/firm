@@ -139,6 +139,45 @@ impl Engine {
         ))
     }
 
+    /// Continue a run that was stopped, reusing its integration branch so the work already
+    /// merged is built on rather than repeated.
+    pub async fn attach(
+        config: Config,
+        board: Board,
+        scorer: Scorer,
+        cancel: watch::Receiver<u64>,
+        run_id: &str,
+    ) -> Result<Self> {
+        let mut board = board;
+        let run = board.run(run_id)?;
+        // Anything left mid-flight when the controller stopped has no agent behind it now.
+        board.reconcile(run_id)?;
+        let trees = Worktrees::attach(
+            &config.workspace,
+            &config.state_dir.join("worktrees"),
+            run_id,
+            &run.integration_branch,
+        )
+        .await?;
+        let provider_slots = config
+            .providers
+            .iter()
+            .map(|p| (p.id.clone(), Arc::new(Semaphore::new(p.max_concurrent))))
+            .collect();
+        Ok(Self {
+            config,
+            board: Arc::new(Mutex::new(board)),
+            trees,
+            scorer,
+            cancel,
+            merge_lock: Mutex::new(()),
+            inflight: Arc::new(Semaphore::new(MAX_CONCURRENT)),
+            provider_slots,
+            progress: None,
+            force_provider: None,
+        })
+    }
+
     /// Send every unpinned task to one provider, overriding routing entirely.
     #[must_use]
     pub fn with_forced_provider(mut self, provider: Option<String>) -> Self {
