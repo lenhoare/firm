@@ -160,16 +160,17 @@ impl Engine {
         if let Some(id) = pinned {
             let provider = self.provider(id)?;
             ensure!(provider.enabled, "Provider {id} is disabled");
+            ensure!(provider.worker, "Provider {id} is not available as a worker");
             return Ok(vec![provider]);
         }
         let mut providers: Vec<Provider> = self
             .config
             .providers
             .iter()
-            .filter(|p| p.enabled)
+            .filter(|p| p.enabled && p.worker)
             .cloned()
             .collect();
-        ensure!(!providers.is_empty(), "No enabled provider");
+        ensure!(!providers.is_empty(), "No provider available as a worker");
         providers.sort_by_key(|p| {
             let free = self
                 .provider_slots

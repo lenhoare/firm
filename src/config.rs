@@ -57,6 +57,10 @@ fn one() -> usize {
     1
 }
 
+fn yes() -> bool {
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -113,6 +117,11 @@ pub struct Provider {
     #[serde(default)]
     pub input: PromptInput,
     pub enabled: bool,
+    /// Whether this provider may be given implementation tasks. `enabled` is the master
+    /// switch for using a provider at all; this separates the roles, so a premium model
+    /// can plan or observe without ever being handed a task to implement.
+    #[serde(default = "yes")]
+    pub worker: bool,
     pub max_runs: usize,
     /// Cost band used by v1 routing: 0 cheap, 1 mid, 2 premium. Prefer the lowest tier
     /// plausibly capable of a task class; escalate only on repeated failure.
@@ -179,6 +188,7 @@ fn legacy_providers() -> Vec<Provider> {
         .to_vec(),
         input: PromptInput::Stdin,
         enabled: true,
+        worker: yes(),
         max_runs: 6,
         tier: 0,
         max_concurrent: one(),

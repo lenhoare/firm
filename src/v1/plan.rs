@@ -11,7 +11,7 @@
 
 use super::board::{RunSpec, validate_graph};
 use crate::{config::Config, worker};
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, bail};
 use std::path::Path;
 use tokio::sync::watch;
 
@@ -101,7 +101,12 @@ fn prompt(config: &Config, brief: &str, notes: &str) -> String {
            passes proves nothing.\n\
          - `verify` is an argv array, executed directly with no shell: \
            [\"cargo\", \"test\", \"--offline\", \"--test\", \"parser\"], never a single string.\n\
-         - Do not assign providers. Routing chooses from {providers:?}.\n\n\
+         - Do not assign providers. Routing chooses from {providers:?}.\n\
+         - If the project cannot be split this way — one monolithic test target, shared \
+           fixtures, or no tests at all — say so by making the first task the one that \
+           creates the seam: add the focused test target that later tasks can be judged \
+           against. A graph of one huge task is a worse answer than a graph that starts by \
+           making decomposition possible.\n\n\
          Reply with JSON only, no prose and no markdown fence:\n\
          {{\"objective\": \"...\", \"tasks\": [{{\"id\": \"short-slug\", \"title\": \"...\", \
          \"brief\": \"what to do, which files, and any constraint\", \
@@ -121,16 +126,72 @@ fn parse(reply: &str) -> Result<RunSpec> {
     if let Ok(spec) = serde_json::from_str::<RunSpec>(reply.trim()) {
         return Ok(spec);
     }
-    let start = reply.find('{').context("No JSON object in the reply")?;
-    let end = reply.rfind('}').context("No JSON object in the reply")?;
-    ensure!(start < end, "No JSON object in the reply");
-    let candidate = &reply[start..=end];
-    if let Ok(spec) = serde_json::from_str::<RunSpec>(candidate) {
-        return Ok(spec);
+    // Take each balanced object in turn rather than assuming the reply is one object.
+    // CLIs print things after the answer — codex appends a token count — and spanning from
+    // the first brace to the last swallows whatever followed.
+    let mut last_error = None;
+    for candidate in objects(reply) {
+        if let Ok(spec) = serde_json::from_str::<RunSpec>(candidate) {
+            return Ok(spec);
+        }
+        match serde_json::from_str::<serde_json::Value>(candidate) {
+            Ok(value) => {
+                if let Some(spec) = find_graph(&value) {
+                    return Ok(spec);
+                }
+            }
+            Err(error) => last_error = Some(error),
+        }
     }
-    let value: serde_json::Value = serde_json::from_str(candidate)
-        .map_err(|e| anyhow::anyhow!("Reply was not valid JSON: {e}"))?;
-    find_graph(&value).context("No task graph found in the reply")
+    match last_error {
+        Some(error) => bail!("Reply was not valid JSON: {error}"),
+        None => bail!("No task graph found in the reply"),
+    }
+}
+
+/// Every balanced `{...}` region in the text, outermost first, ignoring braces inside
+/// strings so an escaped quote or a brace in prose cannot throw off the count.
+fn objects(reply: &str) -> Vec<&str> {
+    let bytes = reply.as_bytes();
+    let mut found = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != b'{' {
+            index += 1;
+            continue;
+        }
+        let mut depth = 0usize;
+        let mut in_string = false;
+        let mut escaped = false;
+        let mut cursor = index;
+        while cursor < bytes.len() {
+            let byte = bytes[cursor];
+            if in_string {
+                if escaped {
+                    escaped = false;
+                } else if byte == b'\\' {
+                    escaped = true;
+                } else if byte == b'"' {
+                    in_string = false;
+                }
+            } else if byte == b'"' {
+                in_string = true;
+            } else if byte == b'{' {
+                depth += 1;
+            } else if byte == b'}' {
+                depth -= 1;
+                if depth == 0 {
+                    if let Some(slice) = reply.get(index..=cursor) {
+                        found.push(slice);
+                    }
+                    break;
+                }
+            }
+            cursor += 1;
+        }
+        index += 1;
+    }
+    found
 }
 
 /// Search a JSON document for the graph, wherever a CLI chose to put it.
@@ -242,6 +303,17 @@ mod tests {
         assert_eq!(spec.objective, "o");
         assert_eq!(spec.tasks[0].verify.as_ref().unwrap(), &["cargo", "test"]);
         assert!(parse(r#"{"usage":{"modelCalls":1}}"#).is_err(), "an envelope with no graph");
+
+        // codex prints a token count after its answer; the graph must still be found.
+        let trailing = r#"{"objective":"o","tasks":[{"id":"a","title":"A","brief":"b"}]}
+tokens used
+10,445"#;
+        assert_eq!(parse(trailing).unwrap().objective, "o");
+
+        // A brace inside a string must not confuse the scan.
+        let braced = r#"prose { not json
+{"objective":"use {} carefully","tasks":[{"id":"a","title":"A","brief":"b"}]}"#;
+        assert_eq!(parse(braced).unwrap().objective, "use {} carefully");
     }
 
     #[test]

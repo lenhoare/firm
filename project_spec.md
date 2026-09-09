@@ -243,6 +243,19 @@ check. Investing in correctability beats investing in first-shot plan quality.
 check against the workspace as it is now, and reports any that cannot execute or that
 already pass.
 
+**Decomposition quality tracks how well the test suite partitions.** Observed directly: a
+five-sentence brief and a one-line "Make the crate work." produced the *identical* five-task
+graph, with the same scoped checks — because the planner reads the workspace, and the
+crate has one test file per module. The brief carries intent; the workspace carries
+specification.
+
+The `verify` requirement is what forces this: to give each task a check that fails now and
+passes when done, the planner has to find a real seam in the test suite. So the prediction
+is that decomposition degrades on a project with one monolithic suite, shared fixtures, or
+no tests — not because the brief is worse, but because there is no seam to find. The
+remedy is then to **add test seams first**, which is itself a task the planner can propose
+once the graph is mutable. It is told so in its prompt.
+
 Two things this needed that were not obvious:
 
 - A planner needs its **own invocation** (`planner_args`). A CLI's plan mode produces a
@@ -253,6 +266,15 @@ Two things this needed that were not obvious:
   a planning invocation emits nothing until it has finished thinking, so silence is work,
   not a hang. The first attempt killed a planner that was busy confirming its own checks
   failed.
+
+**Planner comparison, same brief, same workspace.** Grok and Codex produced the *identical*
+five-task decomposition with the same scoped checks. Grok wrote longer, more prescriptive
+briefs; Codex wrote terser briefs with sharper acceptance criteria, and over-specified
+slightly — it required behaviour at width zero that no test covers. Codex used 10,445
+tokens in one call, 45s; Grok took a comparable 44s but reports no cost in plain-output
+mode. **Planning cost is not recorded anywhere**, which makes exactly this comparison
+harder than it should be; recording tokens and cost per planning call is worth doing before
+choosing a default planner on economics.
 
 ### Allocation from evidence, not self-report
 

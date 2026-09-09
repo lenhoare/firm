@@ -12,11 +12,13 @@ meeting_order = ["grok", "muse", "qwen", "codex"]
 # Local per-provider caps share the overall worker_runs allowance below.
 [[providers]]
 id = "codex"
+planner_args = ["exec", "--model", "{codex_model}", "--sandbox", "read-only", "--skip-git-repo-check", "--color", "never", "--cd", "{workspace}", "-"]
+worker = false
 tier = 2
 max_concurrent = 1
 name = "Codex · Astra"
 command = "codex"
-enabled = false
+enabled = true
 max_runs = 6
 description = "First-choice design and engineering specialist. Use early for architecture, constraints and decomposition, then for difficult implementation where its strengths matter."
 input = "stdin"

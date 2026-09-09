@@ -61,6 +61,10 @@ Work starts from a **written brief**. `firm plan` gives it to the planner
 (`planner`, default `grok`, using that provider's read-only `planner_args`), which reads
 the workspace and returns a task graph — one model call, not one per unit of work.
 
+A provider's roles are separate. `enabled` is the master switch; `worker = false` keeps a
+provider out of implementation work while still allowing it to plan or observe. Codex is
+configured that way: it plans (`firm.codexplan.toml`) but is never handed a task.
+
 The graph is validated before you see it, and validation **runs each proposed check**
 against the workspace as it is now. A check that cannot execute would fail every attempt; a
 check that already passes would merge everything unconditionally. Both are reported, and

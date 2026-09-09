@@ -39,6 +39,7 @@ async fn harness() -> Harness {
         args: vec![],
         input: PromptInput::Stdin,
         enabled: true,
+        worker: true,
         max_runs: 12,
         tier: 0,
         max_concurrent: 3,
