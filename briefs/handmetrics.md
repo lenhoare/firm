@@ -11,7 +11,9 @@ measure, and you cannot evaluate a generator without a way to ask whether the ha
 it produced actually has the slant that was requested. Measurement comes first.
 
 Work against the sample described in `DATA.md`. Read it before planning: the manifest has
-real defects and the code has to cope with them.
+real defects and the code has to cope with them. `DATA.md` and `README.md` describe the
+workspace completely — there is nothing to learn from opening the JPEGs themselves, and
+`data/images/` holds two thousand of them, so do not list or read that directory.
 
 ## What to build
 

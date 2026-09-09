@@ -1,0 +1,413 @@
+{
+  "objective": "Build a Python 3.12 library and CLI (package handmetrics/, tests in tests/) that loads the handwriting sample and measures ink, slant, stroke thickness, ink coverage and baseline from geometry and pixel statistics; expected values in tests must come from synthetic renders or known transforms the test itself applies, never from captured implementation output.",
+  "tasks": [
+    {
+      "id": "test-load",
+      "title": "Write tests for labelled-image loading",
+      "brief": "Create only tests/test_load.py. Do not create or edit any handmetrics/ file.\n\nAPI under test (import inside each test function, never at module top-level, so collection succeeds before the implementation exists):\n  from handmetrics.load import load\n  load(data_dir: str) -> tuple[list, list]\nFirst element: usable records. Each record has attributes filename: str, identity: str, path: str (filesystem path to the JPEG).\nSecond element: discarded rows. Each has attributes filename: str, reason: str where reason is exactly one of 'blank_label', 'unreadable', 'missing_image'.\n\nCover at least:\n1. A tmp_path mini dataset the test builds itself: labels.csv with header FILENAME,IDENTITY; one good labelled JPEG that exists; one JPEG labelled UNREADABLE; one JPEG with a blank identity; one row whose filename is absent from images/. Assert exactly one usable record (identity and filename match the good row, path exists) and three discards with those three reasons. Do not hardcode any count that is a property of data/.\n2. Against real data/ (data_dir='data'): the test itself reads data/labels.csv and checks Path('data/images')/filename.exists(), applying the same three rules, and asserts load() usable/discard counts and reason tallies equal the test's own tallies. Never paste 1950/2000/50/5 as literals.\n3. Every usable record's path exists and identity is neither '' nor 'UNREADABLE'.\n4. load does not raise on the real manifest.\n\nForbidden: importing handmetrics.load (or any implementation) to compute expected counts; modifying data/; creating tests/conftest.py or any other file.",
+      "acceptance": [
+        "pytest collects at least four tests from tests/test_load.py",
+        "expected usable/discard counts are derived in the test from a tmp fixture or from independently re-reading the CSV and checking files, never hardcoded dataset totals",
+        "no top-level import of handmetrics"
+      ],
+      "depends_on": [],
+      "class": "test",
+      "provider": null,
+      "files": [
+        "tests/test_load.py"
+      ],
+      "must_fail": [
+        "python3",
+        "-m",
+        "pytest",
+        "tests/test_load.py",
+        "-q"
+      ],
+      "verify": [
+        "python3",
+        "-m",
+        "pytest",
+        "tests/test_load.py",
+        "--collect-only",
+        "-q"
+      ]
+    },
+    {
+      "id": "implement-load",
+      "title": "Implement manifest loading and discard reporting",
+      "brief": "Create only handmetrics/load.py and handmetrics/__init__.py. Do not edit tests/ or data/.\n\n__init__.py must be exactly a package docstring (no re-exports), e.g. \"\"\"Measure the visual style of handwriting.\"\"\"\n\nload.py must implement:\n  @dataclass\n  class Record:\n      filename: str\n      identity: str\n      path: str\n  @dataclass\n  class Discard:\n      filename: str\n      reason: str  # 'blank_label' | 'unreadable' | 'missing_image'\n  def load(data_dir: str = 'data') -> tuple[list[Record], list[Discard]]:\n\nBehaviour: read {data_dir}/labels.csv (header FILENAME,IDENTITY, no quoting, names may contain spaces). A row is discarded as 'unreadable' if IDENTITY is UNREADABLE, 'blank_label' if IDENTITY is empty/whitespace, 'missing_image' if the JPEG is not present at {data_dir}/images/{FILENAME}. Otherwise it is a Record with path pointing at that JPEG. If a row is both unreadable/blank and missing, missing_image may be used only when the label would otherwise have been usable; unreadable/blank take precedence when the file exists. Counts must be computed by walking the file, never hardcoded. Do not load image pixels.\n\nSatisfy tests/test_load.py. numpy/pillow/pytest only.",
+      "acceptance": [
+        "python3 -m pytest tests/test_load.py -q passes",
+        "no hardcoded 1950/2000/50/5",
+        "data/ is not modified"
+      ],
+      "depends_on": [
+        "test-load"
+      ],
+      "class": "implement",
+      "provider": null,
+      "files": [
+        "handmetrics/load.py",
+        "handmetrics/__init__.py"
+      ],
+      "must_fail": null,
+      "verify": [
+        "python3",
+        "-m",
+        "pytest",
+        "tests/test_load.py",
+        "-q"
+      ]
+    },
+    {
+      "id": "test-ink",
+      "title": "Write tests for ink-vs-background masks",
+      "brief": "Create only tests/test_ink.py. Do not create or edit any handmetrics/ file or tests/conftest.py.\n\nAPI under test (import inside each test function, not at module top-level):\n  from handmetrics.ink import mask\n  mask(image) -> numpy.ndarray of dtype bool, shape (H, W), True where ink is present.\nimage is a PIL Image (RGB or L) or an HxWx3 / HxW numpy array.\n\nExpected values must come from images the test constructs, never from running mask() and recording the output.\n\nCover at least:\n1. Synthetic clean scan: white background, black filled rectangle at a known box. Assert True exactly (or with a 1px antialias slop) on that box and False outside. Count True pixels from the geometry the test drew, not from the function.\n2. Synthetic photo-like: background gray ~180, stroke gray ~40, RGB. Assert the known stroke pixels are True and far-from-stroke background is False.\n3. Uneven illumination: horizontal gradient background (e.g. 140 to 220) plus a dark stroke (~40) whose absolute gray may overlap the dark side of the gradient. Assert the stroke is ink and a background patch on the dark side of the gradient is not.\n4. Empty / no-ink white image: all False.\n5. Real sample: the test reads data/labels.csv, picks the first row whose IDENTITY is not blank/UNREADABLE and whose file exists under data/images/, opens it with PIL. Assert the mask has both True and False, shape equals image size, and mean grayscale of ink pixels is darker than mean grayscale of non-ink pixels (this expected relation is from the definition of ink, not from a captured mask).\n\nDo not listdir data/images/. Do not modify data/. Do not import handmetrics.ink to compute expected pixel counts.",
+      "acceptance": [
+        "pytest collects at least five tests from tests/test_ink.py",
+        "at least one synthetic geometry test and one real-image test",
+        "expected ink pixels are defined by construction or by the darker-than-background rule, not by snapshotting mask()"
+      ],
+      "depends_on": [],
+      "class": "test",
+      "provider": null,
+      "files": [
+        "tests/test_ink.py"
+      ],
+      "must_fail": [
+        "python3",
+        "-m",
+        "pytest",
+        "tests/test_ink.py",
+        "-q"
+      ],
+      "verify": [
+        "python3",
+        "-m",
+        "pytest",
+        "tests/test_ink.py",
+        "--collect-only",
+        "-q"
+      ]
+    },
+    {
+      "id": "implement-ink",
+      "title": "Implement robust ink segmentation",
+      "brief": "Create only handmetrics/ink.py. Do not edit tests/, data/, or other handmetrics modules.\n\nImplement:\n  def mask(image) -> np.ndarray:\n      \"\"\"Boolean ink mask, True where ink is present. Shape (H, W).\"\"\"\nAccept PIL Image or numpy array (RGB or gray). Return a 2D bool ndarray the same H,W as the image.\n\nThese are photographed crops, not clean scans: global threshold 128 will fail the gradient case. Estimate background (e.g. large-radius PIL blur) and mark pixels darker than that background by a margin, or another numpy/PIL-only local method. No scipy, cv2, skimage, or ML.\n\nSatisfy tests/test_ink.py.",
+      "acceptance": [
+        "python3 -m pytest tests/test_ink.py -q passes",
+        "mask handles uneven background brightness",
+        "no new dependencies"
+      ],
+      "depends_on": [
+        "test-ink"
+      ],
+      "class": "implement",
+      "provider": null,
+      "files": [
+        "handmetrics/ink.py"
+      ],
+      "must_fail": null,
+      "verify": [
+        "python3",
+        "-m",
+        "pytest",
+        "tests/test_ink.py",
+        "-q"
+      ]
+    },
+    {
+      "id": "test-slant",
+      "title": "Write tests for vertical-stroke slant in degrees",
+      "brief": "Create only tests/test_slant.py. Do not create handmetrics/ files or shared fixtures files.\n\nAPI under test (import inside each test function):\n  from handmetrics.slant import degrees\n  degrees(ink: np.ndarray) -> float\nink is a 2D bool mask, True=ink. Return value: dominant vertical-stroke slant in degrees; positive leans right; 0 is upright.\n\nHelpers must live in this file. Font: /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf (upright by construction). To binarize a render or a real JPEG, use a test-owned rule (e.g. grayscale < 128 for black-on-white renders; grayscale < mean for real photos). Do not import handmetrics.ink or any other implementation to compute expected angles. Shear in image coordinates with x' = x + y * tan(radians(angle)) so positive angle leans right.\n\nCover at least:\n1. Synthetic upright: render a word with vertical stems (e.g. 'HILL') with DejaVuSans, binarize, assert abs(degrees(mask)) <= 3.0. Expected 0 comes from the upright font, not from a dry run.\n2. Synthetic known shear: take that upright render, shear by +20° and by -15°, binarize each, assert recovered angle within 3.0° of the applied angle.\n3. Real-image delta: read data/labels.csv, pick the first usable existing image, binarize with the test-owned rule, measure s0; shear the RGB image by +12°, binarize the same way, measure s1; assert abs((s1-s0) - 12) <= 5.0. The expected delta is the shear the test applied.\n4. All-False mask returns 0.0 (do not raise).\n\nDo not listdir data/images/. Do not snapshot implementation output as the expected number.",
+      "acceptance": [
+        "pytest collects at least four tests from tests/test_slant.py",
+        "absolute expected angles come from the upright font and applied shears; real-image test asserts a delta, not an absolute ground-truth slant",
+        "tolerances are explicit and finite (3° synthetic, 5° real delta)"
+      ],
+      "depends_on": [],
+      "class": "test",
+      "provider": null,
+      "files": [
+        "tests/test_slant.py"
+      ],
+      "must_fail": [
+        "python3",
+        "-m",
+        "pytest",
+        "tests/test_slant.py",
+        "-q"
+      ],
+      "verify": [
+        "python3",
+        "-m",
+        "pytest",
+        "tests/test_slant.py",
+        "--collect-only",
+        "-q"
+      ]
+    },
+    {
+      "id": "implement-slant",
+      "title": "Implement slant in degrees from an ink mask",
+      "brief": "Create only handmetrics/slant.py. Do not edit tests/ or other modules.\n\nImplement:\n  def degrees(ink: np.ndarray) -> float:\n      \"\"\"Dominant vertical-stroke slant in degrees. Positive leans right; 0 is upright.\"\"\"\nink is 2D bool (True=ink). Use geometry/pixel statistics only (e.g. central-moment orientation, or a search over shear that maximises column-projection variance). numpy/pillow only — no scipy/cv2/skimage/ML. Empty mask -> 0.0.\n\nSatisfy tests/test_slant.py. The function consumes a mask, not a PIL image; do not import handmetrics.ink.",
+      "acceptance": [
+        "python3 -m pytest tests/test_slant.py -q passes",
+        "docstring states units (degrees) and sign convention",
+        "empty mask returns 0.0"
+      ],
+      "depends_on": [
+        "test-slant"
+      ],
+      "class": "implement",
+      "provider": null,
+      "files": [
+        "handmetrics/slant.py"
+      ],
+      "must_fail": null,
+      "verify": [
+        "python3",
+        "-m",
+        "pytest",
+        "tests/test_slant.py",
+        "-q"
+      ]
+    },
+    {
+      "id": "test-thickness",
+      "title": "Write tests for typical pen width in pixels",
+      "brief": "Create only tests/test_thickness.py. No other files.\n\nAPI under test (import inside each test function):\n  from handmetrics.thickness import pixels\n  pixels(ink: np.ndarray) -> float\nink is 2D bool. Return typical pen width in pixels (full width of the stroke, not radius).\n\nCover at least:\n1. Synthetic bar: a long horizontal ink rectangle of height 5 and a long vertical rectangle of width 5 on a larger False canvas. Expected 5 from the geometry. Assert abs(pixels(mask) - 5) <= 1.0 for each.\n2. Scale: nearest-neighbor upsample that 5px-wide bar by 2 in both axes. Expected 10. Assert abs(pixels(scaled) - 10) <= 2.0.\n3. Synthetic font scale: render 'HILL' with DejaVuSans at /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf, binarize with grayscale < 128, measure t0; render the same text at 2x font size (or scale the image 2x nearest-neighbor), measure t1; assert t1/t0 is within [1.6, 2.4]. Expected ratio 2 from the scale the test applied — do not assert an absolute font width you do not know.\n4. Real-image thicken: open the first usable JPEG from data/labels.csv (test reads the CSV; do not listdir data/images/). Binarize with a test-owned rule (grayscale < mean). Let t0 = pixels(mask). Dilate the mask by 1 pixel (test-owned numpy/PIL dilation). Let t1 = pixels(dilated). Assert t1 - t0 is within [1.0, 3.5] (one pixel on each side is +2; allow slop). Expected rise comes from the dilation, not from a dry run.\n5. All-False mask returns 0.0.\n\nDo not import handmetrics.ink or thickness to compute expected widths.",
+      "acceptance": [
+        "pytest collects at least five tests from tests/test_thickness.py",
+        "absolute expected widths come from drawn 5px bars; real/font tests use scale or dilation deltas",
+        "explicit tolerances"
+      ],
+      "depends_on": [],
+      "class": "test",
+      "provider": null,
+      "files": [
+        "tests/test_thickness.py"
+      ],
+      "must_fail": [
+        "python3",
+        "-m",
+        "pytest",
+        "tests/test_thickness.py",
+        "-q"
+      ],
+      "verify": [
+        "python3",
+        "-m",
+        "pytest",
+        "tests/test_thickness.py",
+        "--collect-only",
+        "-q"
+      ]
+    },
+    {
+      "id": "implement-thickness",
+      "title": "Implement typical stroke width in pixels",
+      "brief": "Create only handmetrics/thickness.py. Do not edit tests/ or other modules.\n\nImplement:\n  def pixels(ink: np.ndarray) -> float:\n      \"\"\"Typical pen width in pixels.\"\"\"\nink is 2D bool. Return the typical full stroke width. numpy/PIL only (e.g. binary erosion until vanishing, or a numpy distance-to-background on ink pixels times two along the skeleton). No scipy/cv2/skimage. Empty mask -> 0.0. Do not import handmetrics.ink.\n\nSatisfy tests/test_thickness.py.",
+      "acceptance": [
+        "python3 -m pytest tests/test_thickness.py -q passes",
+        "docstring states units (pixels)",
+        "empty mask returns 0.0"
+      ],
+      "depends_on": [
+        "test-thickness"
+      ],
+      "class": "implement",
+      "provider": null,
+      "files": [
+        "handmetrics/thickness.py"
+      ],
+      "must_fail": null,
+      "verify": [
+        "python3",
+        "-m",
+        "pytest",
+        "tests/test_thickness.py",
+        "-q"
+      ]
+    },
+    {
+      "id": "test-coverage",
+      "title": "Write tests for ink and writing-area fractions",
+      "brief": "Create only tests/test_coverage.py. No other files.\n\nAPI under test (import inside each test function):\n  from handmetrics.coverage import ink_fraction, area_fraction\n  ink_fraction(ink: np.ndarray) -> float\n    Fraction of the axis-aligned bounding box of ink pixels that is ink, in [0, 1].\n  area_fraction(ink: np.ndarray) -> float\n    Fraction of the full image (H*W) occupied by that bounding box, in [0, 1].\n\nCover at least:\n1. Synthetic: 100x50 False canvas with a filled 20x10 ink rectangle. Expected ink_fraction = 1.0 (the bbox is solid ink); expected area_fraction = (20*10)/(100*50) = 0.04. Assert with abs err <= 1e-6.\n2. Synthetic sparse bbox: two ink pixels at (0,0) and (9,9) on a 10x10 canvas. bbox is the whole image so area_fraction = 1.0; ink_fraction = 2/100 = 0.02. abs err <= 1e-6.\n3. Scale invariance: nearest-neighbor 2x scale of a synthetic ink drawing (or of a real binarized crop). Both fractions must stay within 0.05 absolute of the unscaled values because they are ratios. Expected 'unchanged' comes from the definition of a ratio, not from a dry run.\n4. Real image: first usable JPEG from data/labels.csv, binarize with test-owned grayscale < mean. Assert both returns are finite and in (0, 1]. Then 2x nearest-neighbor scale the mask and assert each fraction changes by at most 0.05.\n5. All-False: both return 0.0.\n\nDo not import handmetrics.coverage or ink to compute expected ratios. Do not listdir data/images/.",
+      "acceptance": [
+        "pytest collects at least five tests from tests/test_coverage.py",
+        "synthetic expected ratios are computed from the drawn geometry in the test",
+        "scale tests require ratios to stay put within 0.05"
+      ],
+      "depends_on": [],
+      "class": "test",
+      "provider": null,
+      "files": [
+        "tests/test_coverage.py"
+      ],
+      "must_fail": [
+        "python3",
+        "-m",
+        "pytest",
+        "tests/test_coverage.py",
+        "-q"
+      ],
+      "verify": [
+        "python3",
+        "-m",
+        "pytest",
+        "tests/test_coverage.py",
+        "--collect-only",
+        "-q"
+      ]
+    },
+    {
+      "id": "implement-coverage",
+      "title": "Implement writing-area ink coverage fractions",
+      "brief": "Create only handmetrics/coverage.py. Do not edit tests/ or other modules.\n\nImplement:\n  def ink_fraction(ink: np.ndarray) -> float:\n      \"\"\"Fraction of the writing-area bounding box that is ink, in [0, 1].\"\"\"\n  def area_fraction(ink: np.ndarray) -> float:\n      \"\"\"Fraction of the full image occupied by the writing-area bounding box, in [0, 1].\"\"\"\nWriting area = axis-aligned bbox of True pixels. Empty mask -> 0.0 for both. numpy only. Do not import handmetrics.ink.\n\nSatisfy tests/test_coverage.py.",
+      "acceptance": [
+        "python3 -m pytest tests/test_coverage.py -q passes",
+        "docstrings state the unitless [0,1] meaning of each function",
+        "empty mask returns 0.0"
+      ],
+      "depends_on": [
+        "test-coverage"
+      ],
+      "class": "implement",
+      "provider": null,
+      "files": [
+        "handmetrics/coverage.py"
+      ],
+      "must_fail": null,
+      "verify": [
+        "python3",
+        "-m",
+        "pytest",
+        "tests/test_coverage.py",
+        "-q"
+      ]
+    },
+    {
+      "id": "test-baseline",
+      "title": "Write tests for baseline position and drift",
+      "brief": "Create only tests/test_baseline.py. No other files.\n\nAPI under test (import inside each test function):\n  from handmetrics.baseline import position, slope\n  position(ink: np.ndarray) -> float\n    Baseline y in pixels from the top of the image (y increases downward).\n  slope(ink: np.ndarray) -> float\n    Baseline drift as dy/dx in image coordinates (y down). 0 is level. Positive means the baseline moves down as x increases.\n\nCover at least:\n1. Synthetic level word: render 'HILL' with DejaVuSans at /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf onto a tall white canvas with a known top padding (e.g. draw at y=40). Binarize grayscale < 128. Expected position is near the glyph baseline, which the test controls by the draw y plus the font's ascent (ImageFont.getmetrics or equivalent on the same font object the test used — that is test-controlled, not implementation output). Assert abs(position(mask) - expected_y) <= 3.0 px. Assert abs(slope(mask)) <= 0.03.\n2. Vertical shift: take that mask, pad/roll it down by 10 pixels. position must increase by 10 ± 1. Expected delta is the shift the test applied.\n3. Known drift: take a level synthetic mask and apply a vertical shear y' = y + x * s with s = 0.1. Assert recovered slope is within 0.04 of 0.1. Expected slope is the shear the test applied.\n4. Real-image shift: first usable JPEG from data/labels.csv, binarize with test-owned grayscale < mean. Roll/shift down by 8 px; position delta within 8 ± 2. Shear with s = 0.08; slope delta within 0.08 ± 0.05.\n5. All-False: position 0.0 and slope 0.0.\n\nDo not import handmetrics.baseline or ink to compute expected y or slope. Do not listdir data/images/.",
+      "acceptance": [
+        "pytest collects at least five tests from tests/test_baseline.py",
+        "absolute position expected value comes from the draw coordinate plus font metrics the test queries; drift expected values come from applied shears/shifts",
+        "explicit tolerances"
+      ],
+      "depends_on": [],
+      "class": "test",
+      "provider": null,
+      "files": [
+        "tests/test_baseline.py"
+      ],
+      "must_fail": [
+        "python3",
+        "-m",
+        "pytest",
+        "tests/test_baseline.py",
+        "-q"
+      ],
+      "verify": [
+        "python3",
+        "-m",
+        "pytest",
+        "tests/test_baseline.py",
+        "--collect-only",
+        "-q"
+      ]
+    },
+    {
+      "id": "implement-baseline",
+      "title": "Implement baseline position and slope from an ink mask",
+      "brief": "Create only handmetrics/baseline.py. Do not edit tests/ or other modules.\n\nImplement:\n  def position(ink: np.ndarray) -> float:\n      \"\"\"Baseline y-coordinate in pixels from the top of the image (y increases downward).\"\"\"\n  def slope(ink: np.ndarray) -> float:\n      \"\"\"Baseline drift as dy/dx (image coordinates, y down). 0 is level.\"\"\"\nUse geometry on the mask (e.g. per-column lowest ink y, then a robust line fit in numpy). No scipy/cv2/ML. Empty mask -> 0.0, 0.0. Do not import handmetrics.ink.\n\nSatisfy tests/test_baseline.py.",
+      "acceptance": [
+        "python3 -m pytest tests/test_baseline.py -q passes",
+        "docstrings state units (pixels; dy/dx) and the y-down convention",
+        "empty mask returns 0.0 for both"
+      ],
+      "depends_on": [
+        "test-baseline"
+      ],
+      "class": "implement",
+      "provider": null,
+      "files": [
+        "handmetrics/baseline.py"
+      ],
+      "must_fail": null,
+      "verify": [
+        "python3",
+        "-m",
+        "pytest",
+        "tests/test_baseline.py",
+        "-q"
+      ]
+    },
+    {
+      "id": "test-report",
+      "title": "Write tests for distribution report CLI and summaries",
+      "brief": "Create only tests/test_report.py. No other files.\n\nAPI under test (import inside test functions, not at module top-level):\n  from handmetrics.report import summarize, main\n  summarize(values) -> dict with exactly the keys count, mean, std, p5, p25, p50, p75, p95.\n    count is int length; mean is arithmetic mean; std is population stdev (ddof=0); pK is the Kth percentile.\n  main(argv: list[str] | None = None) -> int  # 0 on success\nCLI: python3 -m handmetrics report --limit N\nstdout must contain one line per metric in this exact order and prefix, each with those stats in this key=value form:\n  slant_deg count=... mean=... std=... p5=... p25=... p50=... p75=... p95=...\n  thickness_px count=... mean=... std=... p5=... p25=... p50=... p75=... p95=...\n  ink_fraction count=... mean=... std=... p5=... p25=... p50=... p75=... p95=...\n  area_fraction count=... mean=... std=... p5=... p25=... p50=... p75=... p95=...\n  baseline_px count=... mean=... std=... p5=... p25=... p50=... p75=... p95=...\n  baseline_slope count=... mean=... std=... p5=... p25=... p50=... p75=... p95=...\nIt may print discard totals before that (values must come from load()'s discard list, not literals).\nSampling: first N usable records in manifest order (deterministic). count on each metric line equals N when N usable records exist.\n\nCover at least:\n1. summarize on a list the test owns, e.g. [0.0, 1.0, 2.0, 3.0, 4.0]. Expected mean=2.0 from sum/len; std from sqrt(mean of squared deviations from that mean); percentiles from the definition (numpy.percentile is allowed in the test as the definition of percentile, applied to the same list, not by calling summarize to see what it said). Assert count==5.\n2. subprocess or main(['report','--limit','3']) against real data/: exit 0; six metric lines with those prefixes; each count=3; each printed mean/std/percentile is a finite float. Do NOT assert the numeric style values of the sample (no ground truth, and you must not run the metrics yourself to fill in expected numbers).\n3. --limit missing -> non-zero exit.\n4. summarize([]) -> count 0 and the numeric fields 0.0 (no raise).\n\nDo not import metric modules to compute expected report numbers. Do not modify data/.",
+      "acceptance": [
+        "pytest collects at least four tests from tests/test_report.py",
+        "numeric expectations for summarize are computed from a test-owned list; CLI tests check structure, count=N, and finite values only",
+        "output line prefixes and stat keys are specified so the implementer can match them"
+      ],
+      "depends_on": [],
+      "class": "test",
+      "provider": null,
+      "files": [
+        "tests/test_report.py"
+      ],
+      "must_fail": [
+        "python3",
+        "-m",
+        "pytest",
+        "tests/test_report.py",
+        "-q"
+      ],
+      "verify": [
+        "python3",
+        "-m",
+        "pytest",
+        "tests/test_report.py",
+        "--collect-only",
+        "-q"
+      ]
+    },
+    {
+      "id": "implement-report",
+      "title": "Implement report summaries and python -m handmetrics CLI",
+      "brief": "Create only handmetrics/report.py and handmetrics/__main__.py. Do not edit tests/, data/, or the metric/load/ink modules.\n\n__main__.py:\n  from handmetrics.report import main\n  raise SystemExit(main())\n\nreport.py:\n  def summarize(values) -> dict with keys count, mean, std, p5, p25, p50, p75, p95\n    (population stdev ddof=0; empty values -> count 0 and numeric 0.0)\n  def main(argv: list[str] | None = None) -> int\n\nWire: argparse subcommand report --limit N (required). load('data'), take the first N usable Record objects in manifest order, open each JPEG with PIL, ink.mask(image), then:\n  slant.degrees, thickness.pixels, coverage.ink_fraction, coverage.area_fraction, baseline.position, baseline.slope\nPrint discard counts from the discarded list returned by load (computed, not hardcoded). Then print the six metric lines in the format required by tests/test_report.py.\n\nImports (these modules already exist when this task runs):\n  from handmetrics.load import load\n  from handmetrics.ink import mask\n  from handmetrics.slant import degrees as slant_degrees\n  from handmetrics.thickness import pixels as thickness_pixels\n  from handmetrics.coverage import ink_fraction, area_fraction\n  from handmetrics.baseline import position as baseline_position, slope as baseline_slope\n\nMust handle 200 images in well under 60s on a laptop CPU (vectorized numpy, do not copy images needlessly). numpy/pillow only. No generation, GUI, network, or extra deps.\n\nSatisfy tests/test_report.py.",
+      "acceptance": [
+        "python3 -m pytest tests/test_report.py -q passes",
+        "python3 -m handmetrics report --limit 3 prints six metric distribution lines with count=3",
+        "discard counts are derived from load(), not literals",
+        "no files outside report.py and __main__.py"
+      ],
+      "depends_on": [
+        "test-report",
+        "implement-load",
+        "implement-ink",
+        "implement-slant",
+        "implement-thickness",
+        "implement-coverage",
+        "implement-baseline"
+      ],
+      "class": "implement",
+      "provider": null,
+      "files": [
+        "handmetrics/report.py",
+        "handmetrics/__main__.py"
+      ],
+      "must_fail": null,
+      "verify": [
+        "python3",
+        "-m",
+        "pytest",
+        "tests/test_report.py",
+        "-q"
+      ]
+    }
+  ]
+}
