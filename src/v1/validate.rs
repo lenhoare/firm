@@ -6,10 +6,14 @@
 //! 92% of real images, because every check tested how it responded to a transform and none
 //! tested what it said about the corpus.
 //!
-//! Two properties make it worth having. It runs **first**, on the brief alone, so its
-//! criteria are written by something that has never seen the decomposition and cannot fit
-//! them to it. And what it produces is **binding**: the planner is then obliged to build a
-//! thing that satisfies criteria it did not choose.
+//! Two properties make it worth having. It runs **first**, so its criteria are written by
+//! something that has never seen the decomposition and cannot fit them to it. And what it
+//! produces is **binding**: the planner is then obliged to build a thing that satisfies
+//! criteria it did not choose.
+//!
+//! It may read the documents the brief refers to — it asked to, on its first live call, and
+//! it was right to. What it must not read is an implementation that already exists, which
+//! would turn its criteria into a description of current behaviour.
 
 use crate::{config::Config, worker};
 use anyhow::{Context, Result, bail};
@@ -84,6 +88,15 @@ fn prompt(brief: &str) -> String {
          **criteria** — the things that matter but cannot honestly be automated, written \
          for a person to weigh up at the end. Be specific about what they should look at \
          and what would worry you. Do not pad this with restatements of the probes.\n\n\
+         You may read what the brief refers to — a data description, a README, a sample \
+         manifest — and it is worth doing, because those documents say what the finished \
+         thing has to cope with. Two limits. **Please do not read any existing \
+         implementation in the repository**: your criteria must come from what the work is \
+         for, not from what someone has already built, or they will only describe the \
+         behaviour that already exists. And a step you want to take is not a probe — do the \
+         reading, then write probes about the finished project. Answer as soon as you have \
+         what you need.\n\n\
+         Give at least three probes and at least three criteria.\n\n\
          Reply with JSON only, no prose and no markdown fence:\n\
          {{\"probes\": [{{\"id\": \"short-slug\", \"description\": \"what this establishes\", \
          \"command\": [\"...\"]}}], \"criteria\": [\"...\"]}}\n\n\
@@ -110,13 +123,16 @@ pub async fn plan(config: &Config, brief: &str, cancel: watch::Receiver<u64>) ->
     let mut provider = chosen.clone();
     // It answers from the brief alone. Given planning arguments it would explore a
     // workspace that has nothing in it yet and spend every turn doing so.
+    // Deliberately not the reviewer's or observer's arguments: both pin a JSON schema for
+    // their own job, and a CLI held to the wrong schema returns nothing rather than
+    // improvising. Learned by watching grok answer this prompt with `structuredOutput:
+    // null` and "model did not produce structured output".
     let Some(args) = provider
-        .reviewer_args
+        .validator_args
         .clone()
-        .or_else(|| provider.observer_args.clone())
         .or_else(|| provider.manager_args.clone())
     else {
-        bail!("The validation planner needs reviewer_args, observer_args or manager_args");
+        bail!("The validation planner needs validator_args or manager_args");
     };
     provider.args = args;
 
@@ -294,5 +310,13 @@ mod tests {
         assert!(text.contains("interfaces the brief itself names"));
         // And the one that stops it emitting probes that pass on an empty repo.
         assert!(text.contains("able to fail"));
+        // A live call returned the single probe "read DATA.md and README.md" with the
+        // command `true` — it was asking for the documents the brief names. It may now
+        // read them, but a step it wants to take is still not a probe.
+        assert!(text.contains("may read what the brief refers to"));
+        assert!(text.contains("not a probe"));
+        // The one thing it must not look at, or its criteria describe what exists rather
+        // than what the work is for.
+        assert!(text.contains("do not read any existing"));
     }
 }

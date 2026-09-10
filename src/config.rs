@@ -208,6 +208,12 @@ pub struct Provider {
     /// tools and never reply. Falls back to `manager_args` when unset.
     #[serde(default)]
     pub observer_args: Option<Vec<String>>,
+    /// Invocation for writing the validation model. It needs its own entry rather than
+    /// borrowing the reviewer's or observer's: those carry JSON schemas for their own jobs,
+    /// and a CLI held to the wrong schema returns nothing at all. Falls back to
+    /// `manager_args`, which constrains nothing.
+    #[serde(default)]
+    pub validator_args: Option<Vec<String>>,
     /// Invocation for reviewing another agent's diff in build mode. Like the observer it
     /// answers from its prompt alone — the diff is given to it, so it needs no tools.
     /// Falls back to `observer_args`, then `manager_args`.
@@ -255,6 +261,7 @@ fn legacy_providers() -> Vec<Provider> {
         manager_args: None,
         observer_args: None,
         reviewer_args: None,
+        validator_args: None,
         planner_args: None,
         resume_args: None,
         worker_timeout_seconds: None,

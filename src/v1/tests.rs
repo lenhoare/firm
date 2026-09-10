@@ -48,6 +48,7 @@ async fn harness() -> Harness {
         manager_args: None,
         observer_args: None,
         reviewer_args: None,
+        validator_args: None,
         planner_args: None,
         resume_args: None,
         worker_timeout_seconds: None,

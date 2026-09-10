@@ -762,11 +762,15 @@ async fn plan(
 
     // A probe that already passes against an unbuilt project establishes nothing, exactly
     // as a task check that already passes does.
+    let mut vacuous = 0;
     if !validation.probes.is_empty() {
         println!("\nChecking the probes can fail against the project as it is now:");
         let results =
             v1::validate::run(&validation, &config.workspace, 120, &cancel_rx).await;
         for result in &results {
+            if result.passed {
+                vacuous += 1;
+            }
             println!(
                 "  {:<18} {}  {}",
                 result.id,
@@ -774,6 +778,29 @@ async fn plan(
                 result.command
             );
         }
+    }
+    // The quality of this call varies a great deal between attempts: one produced five
+    // sharp probes, the next a single placeholder. Planning on a model that cannot fail
+    // would give a run the appearance of validation and none of the substance, so say so
+    // loudly rather than carrying on quietly.
+    if vacuous == validation.probes.len() || validation.criteria.is_empty() {
+        println!(
+            "\n!! This validation model is not usable. {}\n\
+             Nothing here could tell you whether the objective was met. Run plan again \
+             before spending anything on the work — the call is cheap and its output varies.",
+            match validation.probes.is_empty() {
+                true => "It defines no probes at all.".to_string(),
+                false => format!(
+                    "All {} probes already pass against a project that has not been built, \
+                     and there {}.",
+                    validation.probes.len(),
+                    match validation.criteria.is_empty() {
+                        true => "are no criteria either",
+                        false => "are criteria, but nothing executable",
+                    }
+                ),
+            }
+        );
     }
 
     println!("\nPlanning with {} from {brief_path}...\n", config.planner);

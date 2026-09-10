@@ -4,8 +4,9 @@
 //! merge is proof. Ordinary projects have no such thing: their test suite says only that
 //! nothing broke, which a stub satisfies as well as a implementation does. Build mode
 //! closes that gap with a roster model reading the diff against the task it was meant to
-//! do — never the model that wrote it, and never with tools, since the diff is right there
-//! in the prompt.
+//! do — never the model that wrote it. The diff is handed over rather than fetched, so it
+//! can answer at once, but it may open a file the diff touches: judging a change without
+//! the code around it is a keyhole no human reviewer would accept.
 //!
 //! This is judgement, not proof, and the ledger keeps it apart from the real thing.
 
@@ -20,9 +21,9 @@ pub struct Review {
     pub reason: String,
 }
 
-/// What the reviewer is asked. The diff is supplied rather than fetched: a reviewer with
-/// tools spends its turns exploring and never answers, which is what the forum observer
-/// taught us the expensive way.
+/// What the reviewer is asked. The diff is supplied so it can answer immediately, and the
+/// turn cap is what stops it exploring for ever — the observer's failure was plan mode and
+/// an unbounded turn budget, not tool access itself.
 pub fn prompt(
     title: &str,
     brief: &str,
@@ -52,8 +53,11 @@ pub fn prompt(
          much as an honest rejection.\n\n\
          TASK: {title}\n{brief}\n\nACCEPTANCE:\n{acceptance}\n\nFILES CHANGED: {}\n\n\
          DIFF:\n{diff}\n\n\
-         Everything you need is in this prompt. Do not use tools, do not read files, do not \
-         explore — reply immediately with JSON only, no prose and no markdown fence:\n\
+         The diff above is usually enough. You may open a file it touches if you need the \
+         surrounding code to judge the change — the test it has to satisfy, whether a helper \
+         already exists, what the caller expects. Do not go further than that: you are \
+         judging this diff, not auditing the project. Answer as soon as you can, with JSON \
+         only, no prose and no markdown fence:\n\
          {{\"verdict\": \"pass\" or \"fail\", \"reason\": \"one sentence\"}}",
         files.join(", "),
     )
@@ -189,10 +193,12 @@ pub async fn ask(
     cancel: watch::Receiver<u64>,
 ) -> Result<Option<Review>> {
     let mut provider = reviewer.clone();
+    // Not the observer's arguments: they pin a JSON schema for forum entries, and a CLI
+    // held to the wrong schema returns nothing at all rather than improvising. The
+    // validation planner lost a live call to exactly this.
     let Some(args) = provider
         .reviewer_args
         .clone()
-        .or_else(|| provider.observer_args.clone())
         .or_else(|| provider.manager_args.clone())
     else {
         return Ok(None);
@@ -265,7 +271,7 @@ mod tests {
         assert!(text.contains("handles comments"));
         assert!(text.contains("src/parse.rs"));
         assert!(text.contains("+fn parse() {}"));
-        assert!(text.contains("Do not use tools"));
+        assert!(text.contains("judging this diff, not auditing the project"));
         // The reviewer must not be turned into a style critic; that would reject good work.
         assert!(text.contains("Do not reject on style"));
     }
