@@ -21,16 +21,16 @@ pub struct Review {
     pub reason: String,
 }
 
-/// What the reviewer is asked. The diff is supplied so it can answer immediately, and the
-/// turn cap is what stops it exploring for ever — the observer's failure was plan mode and
-/// an unbounded turn budget, not tool access itself.
+/// What the reviewer is asked. The words and the JSON schema they assume live together in
+/// `prompts/reviewer.md`: keeping them in separate files is what once had the validation
+/// planner held to the reviewer's shape, answering with nothing at all.
 pub fn prompt(
     title: &str,
     brief: &str,
     acceptance: &[String],
     files: &[String],
     diff: &str,
-) -> String {
+) -> Result<String> {
     let acceptance = match acceptance.is_empty() {
         true => "  (none stated)".to_string(),
         false => acceptance
@@ -39,28 +39,13 @@ pub fn prompt(
             .collect::<Vec<_>>()
             .join("\n"),
     };
-    format!(
-        "You are reviewing one coding agent's finished work for a team. Decide the single \
-         question: does this diff actually do the task, or only appear to?\n\n\
-         Reject work that is pretending: a function that returns a constant to satisfy a \
-         caller, a stub, a TODO left where the logic belongs, an empty except that swallows \
-         the failure, a test weakened or deleted rather than satisfied, or a change that \
-         addresses something other than the task. Reject work that is plainly incomplete \
-         against the acceptance criteria.\n\n\
-         Do not reject on style, naming, formatting, or how you would have done it, and do \
-         not ask for extra work beyond the task. Imperfect code that genuinely does the job \
-         passes. You are the last check before this is merged, so an honest pass matters as \
-         much as an honest rejection.\n\n\
-         TASK: {title}\n{brief}\n\nACCEPTANCE:\n{acceptance}\n\nFILES CHANGED: {}\n\n\
-         DIFF:\n{diff}\n\n\
-         The diff above is usually enough. You may open a file it touches if you need the \
-         surrounding code to judge the change — the test it has to satisfy, whether a helper \
-         already exists, what the caller expects. Do not go further than that: you are \
-         judging this diff, not auditing the project. Answer as soon as you can, with JSON \
-         only, no prose and no markdown fence:\n\
-         {{\"verdict\": \"pass\" or \"fail\", \"reason\": \"one sentence\"}}",
-        files.join(", "),
-    )
+    crate::prompt::get("reviewer").render(&[
+        ("title", title),
+        ("brief", brief),
+        ("acceptance", &acceptance),
+        ("files", &files.join(", ")),
+        ("diff", diff),
+    ])
 }
 
 /// Read a verdict out of a reply that may be JSON, JSON wrapped in a CLI's own envelope,
@@ -210,7 +195,13 @@ pub async fn ask(
     // A reviewer answers in one go, so silence is thinking rather than a hang.
     config.allowances.idle_timeout_seconds = 0;
 
-    let prepared = worker::prepare_prompt_in(&config, &provider, prompt, config.workspace.clone())?;
+    let prepared = worker::prepare_role(
+        &config,
+        &provider,
+        &crate::prompt::get("reviewer"),
+        prompt,
+        config.workspace.clone(),
+    )?;
     let result = worker::run(&config, &prepared, cancel).await?;
     if result.interruption.is_some() {
         return Ok(None);
@@ -266,7 +257,9 @@ mod tests {
             &["handles comments".into()],
             &["src/parse.rs".into()],
             "@@ -1 +1 @@\n+fn parse() {}",
-        );
+        )
+        .unwrap();
+        let text = crate::prompt::flatten(&text);
         assert!(text.contains("Add a parser"));
         assert!(text.contains("handles comments"));
         assert!(text.contains("src/parse.rs"));

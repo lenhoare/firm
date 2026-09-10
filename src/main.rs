@@ -1,4 +1,5 @@
 mod app;
+mod prompt;
 mod codex;
 mod config;
 mod meetings;
@@ -18,7 +19,7 @@ async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() || args.iter().any(|a| a == "--help" || a == "-h") {
         println!(
-            "Firm 0.1 — experimental agent team\n\n  firm serve [--live] [--config PATH]\n  firm probe [--config PATH]\n  firm usage                                 (what has been spent, and current allowances)\n  firm usage --provider ID (--percent N | --tokens N) [--label TEXT] [--run ID]\n  firm plan --brief BRIEF.md [--out tasks.json] [--build] [--config PATH]\n  firm board --tasks PATH [--live] [--build] [--config PATH]\n  firm board --resume RUN|latest             (continue a run that was stopped)\n  firm board [--watch | --forum | --retire ID | --prune | --stats] [--config PATH]\n  firm board --tasks PATH --provider ID   (force one provider, for comparisons)\n\nBoard runs the v1 engine: several agents work in parallel on a task graph, each in its\nown git worktree; only work passing verify_command is merged. The workspace must be a\nclean git repository and your own branch is never modified.\n\n--build is for ordinary projects, where no check can prove a task was done: the project's\nown tests become a regression guard, a roster model reviews each diff, and a rejected\ntask escalates to a dearer tier instead of retrying the same one. Its record is kept\napart from trial mode's, because only one of them is proof.\n\nDefault: demo mode, localhost:7433, firm.toml.\nProbe reads Codex login type and rate limits; it never starts a model turn.\nLive mode uses your existing Codex subscription and configured worker CLI logins.\nStart app-server separately: codex app-server --listen ws://127.0.0.1:4500"
+            "Firm 0.1 — experimental agent team\n\n  firm serve [--live] [--config PATH]\n  firm probe [--config PATH]\n  firm usage                                 (what has been spent, and current allowances)\n  firm usage --provider ID (--percent N | --tokens N) [--label TEXT] [--run ID]\n  firm prompts                               (what each role is told, and where to edit it)\n  firm plan --brief BRIEF.md [--out tasks.json] [--build] [--config PATH]\n  firm board --tasks PATH [--live] [--build] [--config PATH]\n  firm board --resume RUN|latest             (continue a run that was stopped)\n  firm board [--watch | --forum | --retire ID | --prune | --stats] [--config PATH]\n  firm board --tasks PATH --provider ID   (force one provider, for comparisons)\n\nBoard runs the v1 engine: several agents work in parallel on a task graph, each in its\nown git worktree; only work passing verify_command is merged. The workspace must be a\nclean git repository and your own branch is never modified.\n\n--build is for ordinary projects, where no check can prove a task was done: the project's\nown tests become a regression guard, a roster model reviews each diff, and a rejected\ntask escalates to a dearer tier instead of retrying the same one. Its record is kept\napart from trial mode's, because only one of them is proof.\n\nDefault: demo mode, localhost:7433, firm.toml.\nProbe reads Codex login type and rate limits; it never starts a model turn.\nLive mode uses your existing Codex subscription and configured worker CLI logins.\nStart app-server separately: codex app-server --listen ws://127.0.0.1:4500"
         );
         return Ok(());
     }
@@ -109,6 +110,9 @@ async fn main() -> Result<()> {
     }
     if args[0] == "usage" {
         return usage_command(config, live, provider, percent, tokens, label, run).await;
+    }
+    if args[0] == "prompts" {
+        return show_prompts();
     }
     if args[0] == "plan" {
         return plan(config, brief_path, out_path, live).await;
@@ -530,6 +534,36 @@ async fn board(config: Config, options: BoardOptions<'_>) -> Result<()> {
         }
     }
     drop(lock);
+    Ok(())
+}
+
+/// List the prompts, since most of what this system does is decided by their wording.
+///
+/// The settings shown come from each file's frontmatter and are what actually reaches the
+/// CLI — the provider arguments say `{json_schema}`, `{prompt_tools}` and `{prompt_turns}`,
+/// and these fill them. Editing the prose and editing how far the role may explore are
+/// therefore the same act, in one file.
+fn show_prompts() -> Result<()> {
+    println!("Prompts, from prompts/*.md. Edit and rebuild.\n");
+    println!("  {:<22} {:<7} {:<24} {:<6} opens with", "name", "schema", "tools", "turns");
+    for (name, prompt) in prompt::shipped() {
+        let opening: String = prompt
+            .body()
+            .split_whitespace()
+            .take(9)
+            .collect::<Vec<_>>()
+            .join(" ");
+        println!(
+            "  {:<22} {:<7} {:<24} {:<6} {opening}...",
+            name,
+            if prompt.schema().is_some() { "yes" } else { "-" },
+            match prompt.setting("tools") {
+                Some("") | None => "-".to_string(),
+                Some(tools) => tools.to_string(),
+            },
+            prompt.setting("max_turns").unwrap_or("-"),
+        );
+    }
     Ok(())
 }
 

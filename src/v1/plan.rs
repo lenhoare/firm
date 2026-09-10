@@ -85,7 +85,7 @@ pub async fn decompose(
     // Idle detection assumes a streaming event log. A planning invocation emits plain text
     // and says nothing until it has finished thinking, so silence here is work, not a hang.
     config.allowances.idle_timeout_seconds = 0;
-    let prompt = prompt(&config, brief, notes, validation);
+    let prompt = prompt(&config, brief, notes, validation)?;
     let prepared =
         worker::prepare_prompt_in(&config, &provider, prompt, config.workspace.clone())?;
     let result = worker::run(&config, &prepared, cancel).await?;
@@ -108,7 +108,7 @@ fn prompt(
     brief: &str,
     notes: &str,
     validation: &super::validate::Validation,
-) -> String {
+) -> Result<String> {
     // Written before this call, by something that never saw a plan. Handing it over makes
     // the criteria binding on the decomposition rather than a document nobody reads.
     let success = if validation.is_empty() {
@@ -127,76 +127,38 @@ fn prompt(
             .collect::<Vec<_>>()
             .join("\n");
         format!(
-            "\n\nHOW THIS WILL BE JUDGED WHEN IT IS FINISHED. These were written before \
-             you saw the brief and are not yours to change; plan work that satisfies them. \
-             They are checked against the assembled project at the end, not task by task, \
-             so make sure something in your graph is responsible for each.\n\
+            "\nHOW THIS WILL BE JUDGED WHEN IT IS FINISHED. These were written before you \
+             saw the brief and are not yours to change; plan work that satisfies them. They \
+             are checked against the assembled project at the end, not task by task, so make \
+             sure something in your graph is responsible for each.\n\
              Probes that will be run:\n{probes}\n\
-             Judgements a person will make:\n{criteria}"
+             Judgements a person will make:\n{criteria}\n"
         )
     };
-    let providers: Vec<&str> = config
+    let providers = config
         .providers
         .iter()
         .filter(|p| p.enabled)
         .map(|p| p.id.as_str())
-        .collect();
+        .collect::<Vec<_>>()
+        .join(", ");
     // What a check can mean depends on the regime. In trial mode it is proof; in build
     // mode most tasks have none, and demanding one produces invented checks that pass
     // vacuously — worse than none, because they look like evidence.
-    let verify_rule = if config.mode == "build" {
-        "- A `verify` command is optional here, and worth giving only where a real one \
-           exists: a check that genuinely fails now and passes once the task is done. Do \
-           not invent one to fill the field. Where there is none, the project's own tests \
-           act as a guard against breakage and a reviewer reads the diff, so what matters \
-           is that `acceptance` states plainly what done looks like — specific enough that \
-           someone reading the diff could tell whether it was achieved.\n"
-    } else {
-        "- Each task needs a `verify` command: the exact argv the controller will run to \
-           decide whether that task's work is acceptable. It must be scoped to that task, \
-           because while other tasks are unfinished a whole-project check necessarily \
-           fails. It must fail now and pass once the task is done — a check that already \
-           passes proves nothing.\n"
-    };
-    format!(
-        "You are planning work for a team of coding agents that run **in parallel**, each \
-         in its own isolated git worktree, on the project at {workspace}. Read the \
-         workspace to see what is actually there. Do not change any files.\n\n\
-         Decompose the brief below into a task graph.\n\n\
-         Rules that matter:\n\
-         - Prefer tasks that touch **disjoint files**. Agents work simultaneously and their \
-           work is merged, so two tasks editing the same file will conflict.\n\
-         - Add a dependency only where one task genuinely needs another's merged result. \
-           Every unnecessary dependency removes parallelism.\n\
-         {verify_rule}\
-         - `verify` is an argv array, executed directly with no shell: \
-           [\"cargo\", \"test\", \"--offline\", \"--test\", \"parser\"], never a single string.\n\
-         - `files` is required on every task: exactly the files it may modify. Anything else it changes \
-           is rejected, which is what stops one task quietly editing another's work — or a \
-           task editing the test it is supposed to satisfy.\n\
-         - A task that writes a test must also give `must_fail`: a command that must still \
-           fail once the test exists, because the code it tests has not been written. A new \
-           test that passes against unimplemented code asserts nothing.\n\
-         - Do not assign providers. Routing chooses from {providers:?}.\n\
-         - If the project cannot be split this way — one monolithic test target, shared \
-           fixtures, or no tests at all — say so by making the first task the one that \
-           creates the seam: add the focused test target that later tasks can be judged \
-           against. A graph of one huge task is a worse answer than a graph that starts by \
-           making decomposition possible.\n\n\
-         Reply with JSON only, no prose and no markdown fence:\n\
-         {{\"objective\": \"...\", \"tasks\": [{{\"id\": \"short-slug\", \"title\": \"...\", \
-         \"brief\": \"what to do, which files, and any constraint\", \
-         \"acceptance\": [\"...\"], \"verify\": [\"...\"], \"files\": [\"src/thing.rs\"], \
-         \"depends_on\": [], \"class\": \"implement\"}}]}}\n\
-         A test-writing task adds \"must_fail\": [\"cargo\", \"test\", \"--test\", \"thing\"].\n\n\
-         Ids are lowercase slugs, unique, and referenced by depends_on. Class is one of \
-         design, implement, test, review, docs, integrate.\n\n\
-         --- brief ---\n{brief}\n--- end brief ---{success}{notes}",
-        workspace = config.workspace.display(),
-        providers = providers,
-        verify_rule = verify_rule,
-        success = success,
-    )
+    let verify_rule = match config.mode.as_str() {
+        "build" => crate::prompt::get("planner_verify_build"),
+        _ => crate::prompt::get("planner_verify_trial"),
+    }
+    .render(&[])?;
+
+    crate::prompt::get("planner").render(&[
+        ("workspace", &config.workspace.display().to_string()),
+        ("providers", &providers),
+        ("verify_rule", &verify_rule),
+        ("brief", brief),
+        ("success", &success),
+        ("notes", notes),
+    ])
 }
 
 /// Pull a run specification out of a reply that may be wrapped in prose, a fence, or a

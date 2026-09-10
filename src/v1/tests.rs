@@ -1417,6 +1417,8 @@ async fn a_worker_is_shown_the_point_of_the_run_without_being_given_a_second_bri
     let written =
         std::fs::read_to_string(integration).expect("the agent dumped its prompt to the file");
 
+    // Flattened, because the prompt is markdown now and gets re-wrapped as it is edited.
+    let written = crate::prompt::flatten(&written);
     assert!(written.contains("Measure handwriting"), "the objective is there");
     assert!(
         written.contains("cannot be built until the measurements exist"),

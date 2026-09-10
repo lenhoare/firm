@@ -214,6 +214,33 @@ pub fn prepare_prompt_in(
     prepare_session(config, provider, prompt, workspace, "")
 }
 
+/// Prepare a call whose invocation settings come from the prompt file itself.
+///
+/// A prompt that asks for a particular JSON shape declares the schema in its frontmatter,
+/// and the provider's arguments say `--json-schema {json_schema}`. Keeping the two together
+/// is the point: they were in separate files when the validation planner was handed the
+/// reviewer's schema and answered with nothing at all. Tools and the turn budget travel the
+/// same way, because how far a role may explore belongs with what it is being asked to do.
+pub fn prepare_role(
+    config: &Config,
+    provider: &Provider,
+    prompt: &crate::prompt::Prompt,
+    rendered: String,
+    workspace: std::path::PathBuf,
+) -> Result<Prepared> {
+    let mut provider = provider.clone();
+    provider.args = provider
+        .args
+        .iter()
+        .map(|arg| {
+            arg.replace("{json_schema}", prompt.schema().unwrap_or("{}"))
+                .replace("{prompt_tools}", prompt.setting("tools").unwrap_or(""))
+                .replace("{prompt_turns}", prompt.setting("max_turns").unwrap_or("8"))
+        })
+        .collect();
+    prepare_session(config, &provider, rendered, workspace, "")
+}
+
 /// As above, but naming the CLI session so the same conversation can be continued later.
 /// Providers that support it put `{session_id}` in their arguments; the rest ignore it.
 pub fn prepare_session(

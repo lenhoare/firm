@@ -56,52 +56,14 @@ pub struct ProbeResult {
     pub detail: String,
 }
 
-fn prompt(brief: &str) -> String {
-    format!(
-        "You are deciding **how we will know this project succeeded**. Nobody has planned \
-         the work yet and you will not see the plan: your job is to write down what success \
-         means while it can still be judged on its own terms.\n\n\
-         The distinction that matters here is between *was it built as specified* and *does \
-         it actually do the job*. The team will already check the first, task by task. You \
-         are responsible for the second. The question to keep asking is: what would make \
-         this thing useless in practice even if every unit test passed?\n\n\
-         A real example of the failure you are guarding against. A project measured the \
-         slant of handwriting. Its tests sheared images by known angles and confirmed the \
-         measurement moved correctly, so every test passed — and the finished metric \
-         reported exactly zero on 92% of real handwriting, because responding correctly to \
-         a transform and measuring the real thing are different properties. A probe that \
-         ran it over a hundred real inputs and looked at the spread would have caught it in \
-         a second.\n\n\
-         Give two things.\n\n\
-         **probes** — commands that can be run against the finished project and that can \
-         fail. Constraints, because these are written before the code exists:\n\
-         - Test only the **interfaces the brief itself names** — a CLI it specifies, a file \
-           it says will be produced, an entry point it describes. You cannot know internal \
-           function names, so do not guess at them.\n\
-         - Each must be able to fail *now*, against a project that has not been built. A \
-           probe that already passes tests nothing.\n\
-         - Prefer probes about behaviour over the whole thing: distributions over real \
-           inputs, end-to-end runs, outputs sane at the boundaries, performance the brief \
-           requires. Do not restate the unit tests the team will write anyway.\n\
-         - argv arrays, run in the project root with no shell unless you invoke one \
-           explicitly, e.g. [\"sh\", \"-c\", \"...\"].\n\n\
-         **criteria** — the things that matter but cannot honestly be automated, written \
-         for a person to weigh up at the end. Be specific about what they should look at \
-         and what would worry you. Do not pad this with restatements of the probes.\n\n\
-         You may read what the brief refers to — a data description, a README, a sample \
-         manifest — and it is worth doing, because those documents say what the finished \
-         thing has to cope with. Two limits. **Please do not read any existing \
-         implementation in the repository**: your criteria must come from what the work is \
-         for, not from what someone has already built, or they will only describe the \
-         behaviour that already exists. And a step you want to take is not a probe — do the \
-         reading, then write probes about the finished project. Answer as soon as you have \
-         what you need.\n\n\
-         Give at least three probes and at least three criteria.\n\n\
-         Reply with JSON only, no prose and no markdown fence:\n\
-         {{\"probes\": [{{\"id\": \"short-slug\", \"description\": \"what this establishes\", \
-         \"command\": [\"...\"]}}], \"criteria\": [\"...\"]}}\n\n\
-         --- brief ---\n{brief}\n--- end brief ---"
-    )
+/// What the validation planner is asked, and the schema its wording assumes — both in
+/// `prompts/validator.md`, so neither can be changed without the other in view.
+fn prompt(brief: &str) -> Result<String> {
+    crate::prompt::get("validator").render(&[("brief", brief)])
+}
+
+fn template() -> crate::prompt::Prompt {
+    crate::prompt::get("validator")
 }
 
 /// Ask the validation planner what success means. One call per run, before anything else.
@@ -140,8 +102,13 @@ pub async fn plan(config: &Config, brief: &str, cancel: watch::Receiver<u64>) ->
     config.verify_command.clear();
     config.allowances.idle_timeout_seconds = 0;
 
-    let prepared =
-        worker::prepare_prompt_in(&config, &provider, prompt(brief), config.workspace.clone())?;
+    let prepared = worker::prepare_role(
+        &config,
+        &provider,
+        &template(),
+        prompt(brief)?,
+        config.workspace.clone(),
+    )?;
     let result = worker::run(&config, &prepared, cancel).await?;
     if let Some(reason) = result.interruption {
         bail!("The validation planner was interrupted: {reason}");
@@ -302,7 +269,7 @@ mod tests {
 
     #[test]
     fn the_prompt_withholds_the_plan_and_asks_the_validation_question() {
-        let text = prompt("Build a thing");
+        let text = crate::prompt::flatten(&prompt("Build a thing").unwrap());
         assert!(text.contains("Build a thing"));
         assert!(text.contains("you will not see the plan"));
         assert!(text.contains("what would make this thing useless"));
