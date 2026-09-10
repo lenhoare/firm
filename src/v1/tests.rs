@@ -103,8 +103,10 @@ async fn a_provider_may_set_its_own_timeouts() {
     .unwrap();
 
     let spec = RunSpec {
+        brief: String::new(),
         objective: "Respect a provider's own limits".into(),
         tasks: vec![task("slow", "CREATE:slow.txt", &[])],
+        validation: Default::default(),
     };
     let started = std::time::Instant::now();
     let (run_id, board) = drive(&harness, spec).await;
@@ -130,6 +132,8 @@ async fn the_controller_publishes_outcomes_and_a_later_agent_is_shown_them() {
     // The fake agent echoes its prompt into the file it writes, so we can prove what the
     // second agent was actually told.
     let spec = RunSpec {
+        brief: String::new(),
+        validation: Default::default(),
         objective: "Share what happened".into(),
         tasks: vec![
             task("first", "CREATE:first.txt", &[]),
@@ -161,8 +165,10 @@ async fn an_observer_can_change_the_plan_and_the_dispatcher_runs_the_new_task() 
     harness.config.providers[0].observer_args = Some(vec![]);
 
     let spec = RunSpec {
+        brief: String::new(),
         objective: "Let what is learned change what is done".into(),
         tasks: vec![task("propose-followup", "CREATE:first.txt", &[])],
+        validation: Default::default(),
     };
     let (run_id, board) = drive(&harness, spec).await;
 
@@ -199,8 +205,10 @@ async fn a_task_its_dependencies_already_satisfied_is_not_failed_for_doing_nothi
     second.verify = Some(vec!["sh".into(), "-c".into(), "test -f done.txt".into()]);
 
     let spec = RunSpec {
+        brief: String::new(),
         objective: "A task with nothing left to do".into(),
         tasks: vec![first, second],
+        validation: Default::default(),
     };
     let (run_id, board) = drive(&harness, spec).await;
 
@@ -230,8 +238,10 @@ async fn an_agent_that_edits_a_file_outside_its_scope_is_rejected() {
     scoped.verify = Some(vec!["sh".into(), "-c".into(), "test -f forbidden.txt".into()]);
 
     let spec = RunSpec {
+        brief: String::new(),
         objective: "Stay in your lane".into(),
         tasks: vec![scoped],
+        validation: Default::default(),
     };
     let (run_id, board) = drive(&harness, spec).await;
 
@@ -251,8 +261,10 @@ async fn a_declared_file_and_an_exempt_lockfile_are_both_allowed() {
     let mut scoped = task("scoped", "CREATE:allowed.txt", &[]);
     scoped.files = vec!["allowed.txt".into()];
     let spec = RunSpec {
+        brief: String::new(),
         objective: "Declared files are fine".into(),
         tasks: vec![scoped],
+        validation: Default::default(),
     };
     let (run_id, board) = drive(&harness, spec).await;
     assert_eq!(board.tasks(&run_id).unwrap()[0].state, TaskState::Merged);
@@ -270,8 +282,10 @@ async fn a_test_that_passes_against_unwritten_code_is_rejected() {
     seam.must_fail = Some(vec!["true".into()]);
 
     let spec = RunSpec {
+        brief: String::new(),
         objective: "A test must actually test something".into(),
         tasks: vec![seam],
+        validation: Default::default(),
     };
     let (run_id, board) = drive(&harness, spec).await;
 
@@ -293,8 +307,10 @@ async fn a_test_that_genuinely_fails_first_is_accepted() {
     seam.must_fail = Some(vec!["sh".into(), "-c".into(), "test -f not-built-yet".into()]);
 
     let spec = RunSpec {
+        brief: String::new(),
         objective: "A real test is accepted".into(),
         tasks: vec![seam],
+        validation: Default::default(),
     };
     let (run_id, board) = drive(&harness, spec).await;
     assert_eq!(
@@ -314,6 +330,8 @@ async fn a_stopped_run_resumes_without_redoing_finished_work() {
     harness.config.allowances.worker_runs = 1; // only the first task can run
 
     let spec = RunSpec {
+        brief: String::new(),
+        validation: Default::default(),
         objective: "Stop, then carry on".into(),
         tasks: vec![
             task("first", "CREATE:first.txt", &[]),
@@ -390,8 +408,10 @@ async fn pausing_mid_task_keeps_what_the_agent_had_already_written() {
     .unwrap();
 
     let spec = RunSpec {
+        brief: String::new(),
         objective: "Stop everything mid-task".into(),
         tasks: vec![task("interrupted", "CREATE:partial.txt", &[])],
+        validation: Default::default(),
     };
     let board = Board::open(&harness.board_path).unwrap();
     let (cancel, rx) = watch::channel(0);
@@ -450,8 +470,10 @@ async fn stopping_the_run_is_not_a_verdict_on_the_agent() {
     .unwrap();
 
     let spec = RunSpec {
+        brief: String::new(),
         objective: "Stop an agent before it writes".into(),
         tasks: vec![task("stopped", "CREATE:never.txt", &[])],
+        validation: Default::default(),
     };
     let board = Board::open(&harness.board_path).unwrap();
     let (cancel, rx) = watch::channel(0);
@@ -506,8 +528,10 @@ async fn an_interrupted_attempt_carries_on_rather_than_starting_over() {
     let mut first = task("long", "carry on where you left off", &[]);
     first.verify = Some(vec!["sh".into(), "-c".into(), "test -f whole.txt".into()]);
     let spec = RunSpec {
+        brief: String::new(),
         objective: "Continue interrupted work".into(),
         tasks: vec![first],
+        validation: Default::default(),
     };
 
     // Start, then stop everything while the agent is mid-task.
@@ -561,8 +585,10 @@ async fn a_worker_can_leave_a_note_for_the_team() {
     let mut harness = harness().await;
     harness.config.forum_observer = String::new();
     let spec = RunSpec {
+        brief: String::new(),
         objective: "Let workers contribute".into(),
         tasks: vec![task("noted", "CREATE:noted.txt NOTE:prefer-iterators", &[])],
+        validation: Default::default(),
     };
     let (run_id, board) = drive(&harness, spec).await;
 
@@ -590,8 +616,10 @@ async fn a_failed_attempt_warns_the_group_rather_than_disappearing() {
     let mut harness = harness().await;
     harness.config.forum_observer = String::new();
     let spec = RunSpec {
+        brief: String::new(),
         objective: "Record failures too".into(),
         tasks: vec![task("doomed", "This cannot work. FAILNOW", &[])],
+        validation: Default::default(),
     };
     let (run_id, board) = drive(&harness, spec).await;
 
@@ -651,6 +679,8 @@ async fn a_cheap_provider_that_keeps_failing_is_no_longer_tried_first() {
     drop(board);
 
     let spec = RunSpec {
+        brief: String::new(),
+        validation: Default::default(),
         objective: "Evidence overrules price".into(),
         tasks: vec![{
             let mut t = task("one", "CREATE:one.txt", &[]);
@@ -686,6 +716,8 @@ async fn an_operator_override_beats_the_evidence() {
     drop(board);
 
     let spec = RunSpec {
+        brief: String::new(),
+        validation: Default::default(),
         objective: "The operator decides".into(),
         tasks: vec![{
             let mut t = task("one", "CREATE:one.txt", &[]);
@@ -730,6 +762,8 @@ async fn unpinned_work_fills_the_cheapest_tier_then_spills_to_the_next() {
 
     // Three independent tasks, none pinned to a provider.
     let spec = RunSpec {
+        brief: String::new(),
+        validation: Default::default(),
         objective: "Spread unpinned work across the roster".into(),
         tasks: ["one", "two", "three"]
             .iter()
@@ -797,8 +831,10 @@ async fn a_task_is_judged_by_its_own_check_not_by_unfinished_work_elsewhere() {
         timeout_seconds: 30,
     };
     let spec = RunSpec {
+        brief: String::new(),
         objective: "Judge each task on its own check".into(),
         tasks: vec![first, second],
+        validation: Default::default(),
     };
     let (engine, run_id) = Engine::create(harness.config.clone(), board, scorer, rx, &spec)
         .await
@@ -820,6 +856,8 @@ async fn the_rolling_allowance_caps_agent_runs_and_holds_the_rest() {
     // Three tasks are ready at once, but only two agent runs are allowed in the window.
     harness.config.allowances.worker_runs = 2;
     let spec = RunSpec {
+        brief: String::new(),
+        validation: Default::default(),
         objective: "Respect the budget".into(),
         tasks: vec![
             task("one", "CREATE:one.txt", &[]),
@@ -867,6 +905,8 @@ async fn a_per_provider_cap_is_enforced_independently_of_the_overall_allowance()
     harness.config.allowances.worker_runs = 10;
     harness.config.providers[0].max_runs = 1;
     let spec = RunSpec {
+        brief: String::new(),
+        validation: Default::default(),
         objective: "Respect the per-provider cap".into(),
         tasks: vec![
             task("one", "CREATE:one.txt", &[]),
@@ -906,6 +946,8 @@ async fn drive_with(harness: &Harness, spec: RunSpec, scorer: Scorer) -> (String
 async fn parallel_tasks_are_isolated_scored_and_merged_in_dependency_order() {
     let harness = harness().await;
     let spec = RunSpec {
+        brief: String::new(),
+        validation: Default::default(),
         objective: "Build three files".into(),
         tasks: vec![
             task("alpha", "Write the alpha file. CREATE:alpha.txt", &[]),
@@ -959,6 +1001,8 @@ async fn parallel_tasks_are_isolated_scored_and_merged_in_dependency_order() {
 async fn a_failing_agent_is_retried_then_fails_the_task_and_blocks_dependents() {
     let harness = harness().await;
     let spec = RunSpec {
+        brief: String::new(),
+        validation: Default::default(),
         objective: "Handle failure honestly".into(),
         tasks: vec![
             task("good", "Write the good file. CREATE:good.txt", &[]),
@@ -1005,6 +1049,8 @@ async fn a_failing_agent_is_retried_then_fails_the_task_and_blocks_dependents() 
 async fn an_agent_that_writes_nothing_or_fails_the_check_is_not_merged() {
     let harness = harness().await;
     let spec = RunSpec {
+        brief: String::new(),
+        validation: Default::default(),
         objective: "Reject work that cannot be verified".into(),
         tasks: vec![
             // Announces nothing and writes nothing — v0's first live trial saw exactly this.
@@ -1072,8 +1118,10 @@ async fn build_mode_merges_work_no_check_could_have_proved() {
     let mut only = task("feature", "CREATE:feature.txt", &[]);
     only.verify = None;
     let spec = RunSpec {
+        brief: String::new(),
         objective: "Do ordinary work".into(),
         tasks: vec![only],
+        validation: Default::default(),
     };
     let passing = Scorer::Command {
         command: vec!["true".into()],
@@ -1099,8 +1147,10 @@ async fn build_mode_rejects_an_attempt_that_breaks_what_was_working() {
     let mut only = task("breaks-it", "CREATE:BROKEN", &[]);
     only.verify = None;
     let spec = RunSpec {
+        brief: String::new(),
         objective: "Break the build".into(),
         tasks: vec![only],
+        validation: Default::default(),
     };
     let (run_id, board) = drive(&harness, spec).await;
 
@@ -1125,8 +1175,10 @@ async fn a_check_that_was_already_failing_does_not_condemn_anyone() {
     let mut only = task("regardless", "CREATE:work.txt", &[]);
     only.verify = None;
     let spec = RunSpec {
+        brief: String::new(),
         objective: "Work on a project that is already broken".into(),
         tasks: vec![only],
+        validation: Default::default(),
     };
     let already_red = Scorer::Command {
         command: vec!["false".into()],
@@ -1169,8 +1221,10 @@ async fn a_rejected_task_escalates_to_a_dearer_tier_rather_than_retrying_the_che
     only.provider = None; // let routing choose
     only.verify = Some(vec!["sh".into(), "-c".into(), "test -f done.txt".into()]);
     let spec = RunSpec {
+        brief: String::new(),
         objective: "Escalate when the cheap model fails".into(),
         tasks: vec![only],
+        validation: Default::default(),
     };
     let passing = Scorer::Command {
         command: vec!["true".into()],
@@ -1199,8 +1253,10 @@ async fn build_outcomes_stay_out_of_the_trial_ledger() {
     let mut only = task("ordinary", "CREATE:thing.txt", &[]);
     only.verify = None;
     let spec = RunSpec {
+        brief: String::new(),
         objective: "Ordinary work".into(),
         tasks: vec![only],
+        validation: Default::default(),
     };
     let passing = Scorer::Command {
         command: vec!["true".into()],
@@ -1225,8 +1281,10 @@ async fn an_operator_stop_never_becomes_evidence_about_a_provider() {
     let harness = harness().await;
     let mut board = Board::open(&harness.board_path).unwrap();
     let spec = RunSpec {
+        brief: String::new(),
         objective: "Evidence".into(),
         tasks: vec![task("one", "CREATE:one.txt", &[])],
+        validation: Default::default(),
     };
     board
         .create_run("run-evidence", &spec, "abc", "firm/run-evidence", "trial")
@@ -1255,4 +1313,121 @@ async fn an_operator_stop_never_becomes_evidence_about_a_provider() {
     let record = stats.get("fake").expect("the provider has a record");
     assert_eq!(record.attempts, 1, "only the judged attempt counts");
     assert_eq!(record.success_percent(), 100, "it passed the one it was judged on");
+}
+
+#[tokio::test]
+async fn validation_asks_whether_the_result_is_any_use_not_whether_tasks_were_done() {
+    // The handwriting trial's lesson: every task can be carried out correctly and the
+    // objective still not met. Probes are written before the plan, run on the assembled
+    // result, and report rather than gate — what to do about a failure is a person's call.
+    let mut harness = harness().await;
+    harness.config.forum_observer = String::new();
+
+    let spec = RunSpec {
+        brief: String::new(),
+        objective: "Build the thing".into(),
+        tasks: vec![task("build-it", "CREATE:thing.txt", &[])],
+        validation: super::validate::Validation {
+            probes: vec![
+                super::validate::Probe {
+                    id: "produces-output".into(),
+                    description: "the thing it was asked for exists".into(),
+                    command: vec!["test".into(), "-f".into(), "thing.txt".into()],
+                },
+                super::validate::Probe {
+                    id: "is-actually-useful".into(),
+                    description: "and does the job it was for".into(),
+                    command: vec!["test".into(), "-f".into(), "never-written.txt".into()],
+                },
+            ],
+            criteria: vec!["Read the output and decide whether it reads like handwriting".into()],
+        },
+    };
+
+    let board = Board::open(&harness.board_path).unwrap();
+    let (_tx, rx) = watch::channel(0);
+    let (engine, run_id) = Engine::create(harness.config.clone(), board, scorer(), rx, &spec)
+        .await
+        .unwrap();
+    let outcome = Arc::new(engine).drive(&run_id).await.unwrap();
+
+    assert_eq!(outcome.merged, 1, "the task itself was done");
+    assert_eq!(outcome.probes.len(), 2, "and then the result was questioned");
+    assert!(outcome.probes[0].passed, "{:?}", outcome.probes[0]);
+    assert!(
+        !outcome.probes[1].passed,
+        "a task done correctly does not mean the objective was met"
+    );
+    assert_eq!(outcome.criteria.len(), 1, "and what cannot be automated is carried through");
+
+    // A failed probe reverts nothing and fails nothing: it is a report for a person.
+    let board = Board::open(&harness.board_path).unwrap();
+    assert_eq!(board.tasks(&run_id).unwrap()[0].state, TaskState::Merged);
+    let stored = board.probe_results(&run_id).unwrap();
+    assert_eq!(stored.len(), 2, "and it outlives the process that produced it");
+    assert_eq!(stored[1].id, "is-actually-useful");
+}
+
+#[tokio::test]
+async fn a_run_planned_without_validation_still_runs() {
+    // Hand-authored task lists predate all of this and must keep working.
+    let harness = harness().await;
+    let spec = RunSpec {
+        brief: String::new(),
+        objective: "No validation model".into(),
+        tasks: vec![task("plain", "CREATE:plain.txt", &[])],
+        validation: Default::default(),
+    };
+    let (run_id, board) = drive(&harness, spec).await;
+    assert_eq!(board.tasks(&run_id).unwrap()[0].state, TaskState::Merged);
+    assert!(board.probe_results(&run_id).unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_worker_is_shown_the_point_of_the_run_without_being_given_a_second_brief() {
+    // Every agent downstream of the planner worked through a keyhole, which is the likely
+    // reason the mutable graph has never once been used: nobody could see far enough to
+    // notice their task no longer served the objective.
+    let mut harness = harness().await;
+    harness.config.forum_observer = String::new();
+    // The fake agent writes its prompt into the file it creates, so the prompt is readable.
+    let spec = RunSpec {
+        objective: "Measure handwriting so it can later be generated".into(),
+        brief: "The generator cannot be built until the measurements exist.".into(),
+        tasks: vec![task("measure", "DUMP:measured.txt", &[])],
+        validation: super::validate::Validation {
+            probes: vec![super::validate::Probe {
+                id: "spread".into(),
+                description: "the metric is not degenerate over real inputs".into(),
+                command: vec!["true".into()],
+            }],
+            criteria: vec!["Does the output look like handwriting?".into()],
+        },
+    };
+    let (run_id, board) = drive(&harness, spec).await;
+    assert_eq!(board.tasks(&run_id).unwrap()[0].state, TaskState::Merged);
+
+    let integration = harness
+        .config
+        .state_dir
+        .join("worktrees")
+        .join(format!("run-{}", &run_id[..8]))
+        .join("integration/measured.txt");
+    let written =
+        std::fs::read_to_string(integration).expect("the agent dumped its prompt to the file");
+
+    assert!(written.contains("Measure handwriting"), "the objective is there");
+    assert!(
+        written.contains("cannot be built until the measurements exist"),
+        "and the brief behind it"
+    );
+    assert!(
+        written.contains("not degenerate over real inputs"),
+        "and how the finished thing will be judged"
+    );
+    // The guard that keeps it context rather than a rival specification.
+    assert!(
+        written.contains("authority on what you do"),
+        "the task still outranks the objective"
+    );
 }

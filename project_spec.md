@@ -573,3 +573,58 @@ Related: an attempt nobody judged is not evidence either. Interrupted and runnin
 are excluded from the record outright — otherwise stopping a run drags down the success rate
 of whichever provider happened to be working at the time, which is exactly what the first
 build-mode ledger showed.
+
+## Validation, and the point of the work
+
+Everything else in Firm asks *verification*: was this task carried out as specified. The
+handwriting trial showed that a project can pass every one of those and still fail —
+a slant metric satisfied six tests and returned exactly zero on 92% of real images, because
+each test asked how it responded to a transform and none asked what it said about the
+corpus. Verification was perfect. Validation never happened, because nothing in the system
+was responsible for it.
+
+Two additions, and the order between them is the load-bearing part.
+
+**A validation planner runs first, on the brief alone.** Before any decomposition exists, it
+answers one question: how will we know this worked? It never sees the plan — criteria
+written after a decomposition get fitted to it, and a plan that grades itself always passes.
+It produces two things: **probes**, commands that can be run against the finished project
+and can fail; and **criteria**, the judgements that cannot honestly be automated, recorded
+for a person to weigh at the end.
+
+Probes are written before the code exists, so they may only test the interfaces the brief
+itself names — a CLI it specifies, a file it says will be produced. That constraint is a
+feature: it turns the probes into a contract the plan must satisfy, and `firm plan` runs
+them against the unbuilt project to show which already pass, since a probe that passes on an
+empty repository establishes nothing. The task planner is then handed the model and told it
+is not theirs to change.
+
+**A validation phase runs last, against the assembled result.** The probes execute on the
+integration worktree once every task is terminal, and the criteria are printed for the
+operator. `firm board --validation RUN` reprints it later.
+
+It does not gate and it does not loop. A failed probe means the objective was not met, which
+is a decision for a person — the alternative, sending the same agents round again, is how a
+system rewrites its way around a defect rather than surfacing it. Nothing is reverted; the
+operator decides what to change and runs the project again.
+
+## What the workers can see
+
+Until now the brief was read once, by the planner, and every agent downstream worked through
+a keyhole: its own task and nothing else. That is adequate for carrying out a task and
+useless for noticing that a task no longer serves the objective — which is the likely reason
+the mutable graph, built for exactly that, **had never once been used in any live run**.
+Nobody could see far enough to propose anything.
+
+Workers are now shown the objective, the brief, and how the finished thing will be judged,
+under an explicit precedence rule: the task is the authority on what they do. The framing
+matters as much as the content. An agent handed two specifications drifts toward the larger
+one, and the task brief is the more precise document — the handwriting task briefs named
+font paths and tolerances the objective never did. It is context for one purpose: so an
+agent that finds its task conflicts with the objective, or is stranded, can say so instead
+of quietly building the wrong thing.
+
+The observer's bar was lowered for the same reason. It read "only where the work as planned
+cannot succeed without it", which is a standard almost nothing meets, and duly nothing ever
+did — including the run where a failed task stranded the integration point and re-scoping
+around it was the obvious call.

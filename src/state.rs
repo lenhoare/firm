@@ -449,7 +449,12 @@ mod tests {
     }
     #[test]
     fn provider_limits_and_cooldowns_are_independent() {
-        let config = crate::config::Config::read(Path::new("firm.toml")).unwrap();
+        let mut config = crate::config::Config::read(Path::new("firm.toml")).unwrap();
+        // The shipped roster is Len's, and who is enabled on it changes. These tests are
+        // about mechanics, so they judge every provider the file defines.
+        for provider in &mut config.providers {
+            provider.enabled = true;
+        }
         let qwen = config.providers.iter().find(|p| p.id == "qwen").unwrap();
         let muse = config.providers.iter().find(|p| p.id == "muse").unwrap();
         let mut s = State::new(true, a());

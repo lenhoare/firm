@@ -16,6 +16,7 @@ pub mod plan;
 pub mod review;
 pub mod scorer;
 pub mod usage;
+pub mod validate;
 pub mod worktree;
 
 #[cfg(test)]

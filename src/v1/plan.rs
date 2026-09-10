@@ -62,6 +62,7 @@ pub async fn decompose(
     config: &Config,
     brief: &str,
     notes: &str,
+    validation: &super::validate::Validation,
     cancel: watch::Receiver<u64>,
 ) -> Result<(RunSpec, String)> {
     let planner = config
@@ -84,7 +85,7 @@ pub async fn decompose(
     // Idle detection assumes a streaming event log. A planning invocation emits plain text
     // and says nothing until it has finished thinking, so silence here is work, not a hang.
     config.allowances.idle_timeout_seconds = 0;
-    let prompt = prompt(&config, brief, notes);
+    let prompt = prompt(&config, brief, notes, validation);
     let prepared =
         worker::prepare_prompt_in(&config, &provider, prompt, config.workspace.clone())?;
     let result = worker::run(&config, &prepared, cancel).await?;
@@ -93,13 +94,47 @@ pub async fn decompose(
         bail!("The planner was interrupted: {reason}\n{}", tail(&raw));
     }
     // Show what it actually said. "No JSON object" on its own is undebuggable.
-    let spec = parse(&raw)
+    let mut spec = parse(&raw)
         .with_context(|| format!("The planner did not return a usable task graph.\n{}", tail(&raw)))?;
     validate_graph(&spec)?;
+    // The model of success travels with the plan: it was written first and the plan has to
+    // answer to it, not the other way round.
+    spec.validation = validation.clone();
     Ok((spec, raw))
 }
 
-fn prompt(config: &Config, brief: &str, notes: &str) -> String {
+fn prompt(
+    config: &Config,
+    brief: &str,
+    notes: &str,
+    validation: &super::validate::Validation,
+) -> String {
+    // Written before this call, by something that never saw a plan. Handing it over makes
+    // the criteria binding on the decomposition rather than a document nobody reads.
+    let success = if validation.is_empty() {
+        String::new()
+    } else {
+        let probes = validation
+            .probes
+            .iter()
+            .map(|p| format!("  - {}: `{}`", p.description, p.command.join(" ")))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let criteria = validation
+            .criteria
+            .iter()
+            .map(|c| format!("  - {c}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!(
+            "\n\nHOW THIS WILL BE JUDGED WHEN IT IS FINISHED. These were written before \
+             you saw the brief and are not yours to change; plan work that satisfies them. \
+             They are checked against the assembled project at the end, not task by task, \
+             so make sure something in your graph is responsible for each.\n\
+             Probes that will be run:\n{probes}\n\
+             Judgements a person will make:\n{criteria}"
+        )
+    };
     let providers: Vec<&str> = config
         .providers
         .iter()
@@ -156,10 +191,11 @@ fn prompt(config: &Config, brief: &str, notes: &str) -> String {
          A test-writing task adds \"must_fail\": [\"cargo\", \"test\", \"--test\", \"thing\"].\n\n\
          Ids are lowercase slugs, unique, and referenced by depends_on. Class is one of \
          design, implement, test, review, docs, integrate.\n\n\
-         --- brief ---\n{brief}\n--- end brief ---{notes}",
+         --- brief ---\n{brief}\n--- end brief ---{success}{notes}",
         workspace = config.workspace.display(),
         providers = providers,
         verify_rule = verify_rule,
+        success = success,
     )
 }
 
@@ -194,7 +230,7 @@ fn parse(reply: &str) -> Result<RunSpec> {
 
 /// Every balanced `{...}` region in the text, outermost first, ignoring braces inside
 /// strings so an escaped quote or a brace in prose cannot throw off the count.
-fn objects(reply: &str) -> Vec<&str> {
+pub fn objects(reply: &str) -> Vec<&str> {
     let bytes = reply.as_bytes();
     let mut found = Vec::new();
     let mut index = 0;
@@ -389,6 +425,8 @@ tokens used
             must_fail: None,
         };
         let spec = RunSpec {
+            brief: String::new(),
+            validation: Default::default(),
             objective: "o".into(),
             tasks: vec![
                 task("honest", Some(vec!["test", "-f", "not-yet-written"])),

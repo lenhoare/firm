@@ -116,7 +116,15 @@ fn implement() -> String {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RunSpec {
     pub objective: String,
+    /// The brief this plan came from, carried so workers can be shown the point of the
+    /// work. Optional: a hand-written task list has no brief behind it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub brief: String,
     pub tasks: Vec<TaskSpec>,
+    /// What success means, written before the graph and binding on it. Optional so that a
+    /// hand-authored task list still runs.
+    #[serde(default, skip_serializing_if = "super::validate::Validation::is_empty")]
+    pub validation: super::validate::Validation,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -200,6 +208,11 @@ pub struct Run {
     /// Which evaluation regime made this run: `trial` or `build`. A resumed run keeps it,
     /// so evidence cannot change regime halfway through.
     pub mode: String,
+    /// What success was defined as, before the work was planned.
+    pub validation: super::validate::Validation,
+    /// The objective as it was actually written, so a worker can see what the whole thing
+    /// is for rather than only the keyhole its own task looks through.
+    pub brief: String,
 }
 
 /// How many tasks a run may hold. A proposal is a spend primitive: an agent that can add
@@ -301,6 +314,9 @@ impl Board {
         add_column(&conn, "attempts", "activity", "TEXT NOT NULL DEFAULT ''")?;
         // Runs made before build mode existed were all trials, which is the right default.
         add_column(&conn, "runs", "mode", "TEXT NOT NULL DEFAULT 'trial'")?;
+        add_column(&conn, "runs", "validation", "TEXT NOT NULL DEFAULT ''")?;
+        add_column(&conn, "runs", "brief", "TEXT NOT NULL DEFAULT ''")?;
+        add_column(&conn, "runs", "probe_results", "TEXT NOT NULL DEFAULT ''")?;
         add_column(&conn, "attempts", "observation", "TEXT NOT NULL DEFAULT ''")?;
         add_column(&conn, "tasks", "files", "TEXT NOT NULL DEFAULT '[]'")?;
         add_column(&conn, "tasks", "must_fail", "TEXT")?;
@@ -359,8 +375,17 @@ impl Board {
 
         let transaction = self.conn.transaction()?;
         transaction.execute(
-            "INSERT INTO runs(id,objective,base_commit,integration_branch,created_at,mode) VALUES(?1,?2,?3,?4,?5,?6)",
-            params![id, spec.objective, base_commit, integration_branch, now(), mode],
+            "INSERT INTO runs(id,objective,base_commit,integration_branch,created_at,mode,validation,brief) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+            params![
+                id,
+                spec.objective,
+                base_commit,
+                integration_branch,
+                now(),
+                mode,
+                serde_json::to_string(&spec.validation)?,
+                spec.brief
+            ],
         )?;
         for task in &spec.tasks {
             transaction.execute(
@@ -388,7 +413,7 @@ impl Board {
     pub fn run(&self, run_id: &str) -> Result<Run> {
         self.conn
             .query_row(
-                "SELECT id,objective,base_commit,integration_branch,created_at,finished_at,mode FROM runs WHERE id=?1",
+                "SELECT id,objective,base_commit,integration_branch,created_at,finished_at,mode,validation,brief FROM runs WHERE id=?1",
                 [run_id],
                 |r| {
                     Ok(Run {
@@ -399,6 +424,9 @@ impl Board {
                         created_at: r.get(4)?,
                         finished_at: r.get(5)?,
                         mode: r.get(6)?,
+                        validation: serde_json::from_str(&r.get::<_, String>(7)?)
+                            .unwrap_or_default(),
+                        brief: r.get(8)?,
                     })
                 },
             )
@@ -622,6 +650,29 @@ impl Board {
         Ok(rows.flatten().collect())
     }
 
+    /// Record what the probes said about the finished project, so the report survives the
+    /// process that produced it.
+    pub fn set_probe_results(
+        &mut self,
+        run_id: &str,
+        results: &[super::validate::ProbeResult],
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE runs SET probe_results=?2 WHERE id=?1",
+            params![run_id, serde_json::to_string(results)?],
+        )?;
+        Ok(())
+    }
+
+    pub fn probe_results(&self, run_id: &str) -> Result<Vec<super::validate::ProbeResult>> {
+        let raw: String = self
+            .conn
+            .query_row("SELECT probe_results FROM runs WHERE id=?1", [run_id], |r| r.get(0))
+            .optional()?
+            .unwrap_or_default();
+        Ok(serde_json::from_str(&raw).unwrap_or_default())
+    }
+
     /// Providers that have already been judged on this task, so a retry can be sent
     /// somewhere else. An interrupted attempt is not a judgement and does not count.
     pub fn judged_providers(&self, run_id: &str, task_id: &str) -> Result<Vec<String>> {
@@ -734,8 +785,10 @@ impl Board {
                 let mut specs: Vec<TaskSpec> = tasks.iter().map(task_to_spec).collect();
                 specs.push(task.clone());
                 validate_graph(&RunSpec {
+                    brief: String::new(),
                     objective: "check".into(),
                     tasks: specs,
+                    validation: Default::default(),
                 })
                 .map_err(|e| e.to_string())?;
 
@@ -786,8 +839,10 @@ impl Board {
                     spec.depends_on = depends_on.clone();
                 }
                 validate_graph(&RunSpec {
+                    brief: String::new(),
                     objective: "check".into(),
                     tasks: specs,
+                    validation: Default::default(),
                 })
                 .map_err(|e| e.to_string())?;
 
@@ -1150,7 +1205,9 @@ mod tests {
     fn spec(tasks: Vec<TaskSpec>) -> RunSpec {
         RunSpec {
             objective: "Test objective".into(),
+            brief: String::new(),
             tasks,
+            validation: Default::default(),
         }
     }
     fn task(id: &str, depends_on: &[&str]) -> TaskSpec {

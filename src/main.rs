@@ -32,6 +32,7 @@ async fn main() -> Result<()> {
     let mut prune = false;
     let mut stats = false;
     let mut resume: Option<&str> = None;
+    let mut validation: Option<&str> = None;
     let mut brief_path: Option<&str> = None;
     let mut out_path: Option<&str> = None;
     let mut provider: Option<&str> = None;
@@ -80,6 +81,10 @@ async fn main() -> Result<()> {
                 index += 1;
                 run = Some(args.get(index).context("Missing run id")?);
             }
+            "--validation" => {
+                index += 1;
+                validation = Some(args.get(index).map_or("latest", String::as_str));
+            }
             "--brief" => {
                 index += 1;
                 brief_path = Some(args.get(index).context("Missing brief path")?);
@@ -121,6 +126,7 @@ async fn main() -> Result<()> {
                 stats,
                 force_provider: provider,
                 resume,
+                validation,
             },
         )
         .await;
@@ -266,6 +272,7 @@ struct BoardOptions<'a> {
     stats: bool,
     force_provider: Option<&'a str>,
     resume: Option<&'a str>,
+    validation: Option<&'a str>,
 }
 
 async fn board(config: Config, options: BoardOptions<'_>) -> Result<()> {
@@ -279,10 +286,14 @@ async fn board(config: Config, options: BoardOptions<'_>) -> Result<()> {
         stats,
         force_provider,
         resume,
+        validation,
     } = options;
     let board_path = v1::dispatch::board_path(&config.state_dir, live);
     if prune {
         return prune_worktrees(&config, live).await;
+    }
+    if let Some(target) = validation {
+        return show_validation(&config, live, target);
     }
     if stats {
         // What routing is actually going on, so the choice is inspectable rather than
@@ -483,7 +494,98 @@ async fn board(config: Config, options: BoardOptions<'_>) -> Result<()> {
             println!("{}", v1::dispatch::clip(&check.detail, 2000));
         }
     }
+
+    // Validation, kept visually apart from the task-by-task record because it answers a
+    // different question: not whether the work was done, but whether the result is any use.
+    if !outcome.probes.is_empty() {
+        let failed = outcome.probes.iter().filter(|p| !p.passed).count();
+        println!("\nDoes it do the job? Probes written before the plan, run on the result:");
+        for probe in &outcome.probes {
+            println!(
+                "  {} {:<18} {}",
+                if probe.passed { "✓" } else { "✗" },
+                probe.id,
+                probe.description
+            );
+            if !probe.passed {
+                println!("      {}", probe.command);
+                for line in probe.detail.lines().take(4) {
+                    println!("      {line}");
+                }
+            }
+        }
+        if failed > 0 {
+            println!(
+                "\n{failed} of {} probes failed. The tasks may all have been done correctly \
+                 and the objective still not met — that is what these are for. Nothing has \
+                 been reverted; decide what to change and run the project again.",
+                outcome.probes.len()
+            );
+        }
+    }
+    if !outcome.criteria.is_empty() {
+        println!("\nFor you to judge — nobody should pretend to automate these:");
+        for criterion in &outcome.criteria {
+            println!("  - {criterion}");
+        }
+    }
     drop(lock);
+    Ok(())
+}
+
+/// Reprint what validation said about a finished run.
+///
+/// Separate from the run's own output because it is the part worth coming back to: the
+/// task record says what was built, this says whether it was worth building.
+fn show_validation(config: &Config, live: bool, target: &str) -> Result<()> {
+    let board_path = v1::dispatch::board_path(&config.state_dir, live);
+    let board = v1::board::Board::open_readonly(&board_path)?;
+    let run_id = match target {
+        "latest" => board.latest_run()?.context("No runs yet")?,
+        id => board.run(id).map(|run| run.id)?,
+    };
+    let run = board.run(&run_id)?;
+    println!("{}\n{}\n", run.objective, "-".repeat(run.objective.len().min(78)));
+
+    let results = board.probe_results(&run_id)?;
+    if results.is_empty() {
+        if run.validation.probes.is_empty() {
+            println!("This run had no validation model: nothing asked whether the objective was met.");
+        } else {
+            println!("Validation was defined but never run — the run was stopped before the end.");
+            for probe in &run.validation.probes {
+                println!("  pending  {:<18} {}", probe.id, probe.description);
+            }
+        }
+    } else {
+        let failed = results.iter().filter(|p| !p.passed).count();
+        println!("Probes, written before the plan and run on the finished result:");
+        for probe in &results {
+            println!(
+                "  {} {:<18} {}",
+                if probe.passed { "✓" } else { "✗" },
+                probe.id,
+                probe.description
+            );
+            if !probe.passed {
+                println!("      {}", probe.command);
+                for line in probe.detail.lines().take(6) {
+                    println!("      {line}");
+                }
+            }
+        }
+        println!(
+            "\n{} of {} passed.",
+            results.len() - failed,
+            results.len()
+        );
+    }
+    if !run.validation.criteria.is_empty() {
+        println!("\nFor you to judge — nobody should pretend to automate these:");
+        for criterion in &run.validation.criteria {
+            println!("  - {criterion}");
+        }
+    }
     Ok(())
 }
 
@@ -635,10 +737,6 @@ async fn plan(
         )
     };
 
-    println!(
-        "Planning with {} from {brief_path}...\n",
-        config.planner
-    );
     let (cancel, cancel_rx) = tokio::sync::watch::channel(0u64);
     let canceller = cancel.clone();
     tokio::spawn(async move {
@@ -646,7 +744,42 @@ async fn plan(
             canceller.send_modify(|v| *v += 1);
         }
     });
-    let (spec, _raw) = v1::plan::decompose(&config, &brief, &notes, cancel_rx.clone()).await?;
+    // What success means is settled first, by something that will never see the plan.
+    // Reversing this order is the whole point: criteria written after the decomposition
+    // get fitted to it, and a plan that grades itself always passes.
+    let validator = match config.validator.trim().is_empty() {
+        true => config.planner.clone(),
+        false => config.validator.trim().to_string(),
+    };
+    println!("Defining success with {validator}, before any planning...\n");
+    let (validation, _) = v1::validate::plan(&config, &brief, cancel_rx.clone()).await?;
+    for probe in &validation.probes {
+        println!("  probe  {:<18} {}", probe.id, probe.description);
+    }
+    for criterion in &validation.criteria {
+        println!("  ask    {criterion}");
+    }
+
+    // A probe that already passes against an unbuilt project establishes nothing, exactly
+    // as a task check that already passes does.
+    if !validation.probes.is_empty() {
+        println!("\nChecking the probes can fail against the project as it is now:");
+        let results =
+            v1::validate::run(&validation, &config.workspace, 120, &cancel_rx).await;
+        for result in &results {
+            println!(
+                "  {:<18} {}  {}",
+                result.id,
+                if result.passed { "ALREADY PASSES" } else { "fails now, as it should" },
+                result.command
+            );
+        }
+    }
+
+    println!("\nPlanning with {} from {brief_path}...\n", config.planner);
+    let (mut spec, _raw) =
+        v1::plan::decompose(&config, &brief, &notes, &validation, cancel_rx.clone()).await?;
+    spec.brief = brief.clone();
 
     println!("{} — {} tasks\n", spec.objective, spec.tasks.len());
     for task in &spec.tasks {

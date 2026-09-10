@@ -55,6 +55,11 @@ pub struct Config {
     /// kept apart, because only one of them is evidence.
     #[serde(default = "default_mode")]
     pub mode: String,
+    /// Provider that writes the validation model before any planning happens. Empty uses
+    /// the planner's. What matters is that it runs on the brief alone, without the plan —
+    /// a different model is a bonus, a different context is the point.
+    #[serde(default)]
+    pub validator: String,
     /// Provider that reviews diffs in build mode. Empty picks the cheapest eligible one
     /// that did not write the work. Never the author, whatever this says.
     #[serde(default)]

@@ -452,7 +452,12 @@ mod tests {
     use super::*;
     #[test]
     fn shipped_worker_budgets_and_grok_permissions_are_role_specific() {
-        let config = Config::read(std::path::Path::new("firm.toml")).unwrap();
+        let mut config = Config::read(std::path::Path::new("firm.toml")).unwrap();
+        // The shipped roster is Len's, and who is enabled on it changes. These tests are
+        // about mechanics, so they judge every provider the file defines.
+        for provider in &mut config.providers {
+            provider.enabled = true;
+        }
         assert_eq!(config.allowances.worker_max_turns, 64);
         assert_eq!(config.allowances.worker_max_tool_calls, 64);
         for provider in &config.providers {
@@ -531,6 +536,11 @@ mod tests {
         std::fs::write(&script, include_str!("../tests/fixtures/cli-worker.sh")).unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
         let mut config = Config::read(Path::new("firm.toml")).unwrap();
+        // The shipped roster is Len's, and who is enabled on it changes. These tests are
+        // about mechanics, so they judge every provider the file defines.
+        for provider in &mut config.providers {
+            provider.enabled = true;
+        }
         config.workspace = dir.path().into();
         let mut custom = config.providers[0].clone();
         custom.id = "custom".into();
@@ -595,6 +605,11 @@ mod tests {
         .unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
         let mut config = Config::read(Path::new("firm.toml")).unwrap();
+        // The shipped roster is Len's, and who is enabled on it changes. These tests are
+        // about mechanics, so they judge every provider the file defines.
+        for provider in &mut config.providers {
+            provider.enabled = true;
+        }
         config.workspace = dir.path().to_owned();
         config.allowances.worker_timeout_seconds = 300;
         config.allowances.idle_timeout_seconds = 6;
@@ -628,6 +643,11 @@ mod tests {
         .unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
         let mut config = Config::read(Path::new("firm.toml")).unwrap();
+        // The shipped roster is Len's, and who is enabled on it changes. These tests are
+        // about mechanics, so they judge every provider the file defines.
+        for provider in &mut config.providers {
+            provider.enabled = true;
+        }
         config.workspace = dir.path().to_owned();
         config.allowances.idle_timeout_seconds = 5;
         let mut provider = config.providers[0].clone();
@@ -662,6 +682,11 @@ mod tests {
         std::fs::write(&script, include_str!("../tests/fixtures/slow-worker.sh")).unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
         let mut config = Config::read(Path::new("firm.toml")).unwrap();
+        // The shipped roster is Len's, and who is enabled on it changes. These tests are
+        // about mechanics, so they judge every provider the file defines.
+        for provider in &mut config.providers {
+            provider.enabled = true;
+        }
         config.workspace = dir.path().to_owned();
         let provider_index = config
             .providers

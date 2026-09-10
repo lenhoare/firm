@@ -1097,6 +1097,11 @@ pub(crate) mod tests {
     pub fn fixture() -> (tempfile::TempDir, App) {
         let dir = tempfile::tempdir().unwrap();
         let mut config = Config::read(Path::new("firm.toml")).unwrap();
+        // The shipped roster is Len's, and who is enabled on it changes. These tests are
+        // about mechanics, so they judge every provider the file defines.
+        for provider in &mut config.providers {
+            provider.enabled = true;
+        }
         // Keep fixture defaults deterministic without constraining Len's live roster order.
         config.providers.sort_by_key(|p| match p.id.as_str() {
             "qwen" => 0,
