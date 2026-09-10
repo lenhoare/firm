@@ -2,7 +2,7 @@
 //! board → worktree → agent → scorer → merge pipeline runs without model credits.
 
 use super::{
-    board::{Board, RunSpec, TaskSpec, TaskState},
+    board::{Attempt, AttemptState, Board, RunSpec, TaskSpec, TaskState},
     dispatch::Engine,
     scorer::Scorer,
     worktree::{git, tests::repo},
@@ -47,6 +47,7 @@ async fn harness() -> Harness {
         meeting_args: None,
         manager_args: None,
         observer_args: None,
+        reviewer_args: None,
         planner_args: None,
         resume_args: None,
         worker_timeout_seconds: None,
@@ -885,9 +886,15 @@ async fn a_per_provider_cap_is_enforced_independently_of_the_overall_allowance()
 }
 
 async fn drive(harness: &Harness, spec: RunSpec) -> (String, Board) {
+    drive_with(harness, spec, scorer()).await
+}
+
+/// Drive a run under a given check. Build mode reads the project's own check as a
+/// regression guard, so its tests need to choose what that check says.
+async fn drive_with(harness: &Harness, spec: RunSpec, scorer: Scorer) -> (String, Board) {
     let board = Board::open(&harness.board_path).unwrap();
     let (_tx, rx) = watch::channel(0);
-    let (engine, run_id) = Engine::create(harness.config.clone(), board, scorer(), rx, &spec)
+    let (engine, run_id) = Engine::create(harness.config.clone(), board, scorer, rx, &spec)
         .await
         .unwrap();
     let engine = Arc::new(engine);
@@ -1033,4 +1040,219 @@ async fn an_agent_that_writes_nothing_or_fails_the_check_is_not_merged() {
         .await
         .unwrap();
     assert!(!listing.contains("BROKEN"), "{listing}");
+}
+
+// ---------------------------------------------------------------------------------------
+// Build mode: ordinary projects, where no check can prove a task was done.
+// ---------------------------------------------------------------------------------------
+
+/// A roster of three tiers, so escalation has somewhere to escalate to.
+fn tiered(harness: &mut Harness) {
+    let base = harness.config.providers[0].clone();
+    harness.config.providers = (0..3)
+        .map(|tier| Provider {
+            id: format!("tier{tier}"),
+            name: format!("Tier {tier}"),
+            tier,
+            ..base.clone()
+        })
+        .collect();
+}
+
+#[tokio::test]
+async fn build_mode_merges_work_no_check_could_have_proved() {
+    // The whole point of the mode: an ordinary task, no per-task check, and the project's
+    // own suite says only that nothing broke. Trial mode would have nothing to merge on.
+    let mut harness = harness().await;
+    harness.config.mode = "build".into();
+    harness.config.forum_observer = String::new();
+    harness.config.reviewer = String::new(); // no second provider, so no reviewer exists
+    harness.config.verify_command = vec!["true".into()];
+
+    let mut only = task("feature", "CREATE:feature.txt", &[]);
+    only.verify = None;
+    let spec = RunSpec {
+        objective: "Do ordinary work".into(),
+        tasks: vec![only],
+    };
+    let passing = Scorer::Command {
+        command: vec!["true".into()],
+        timeout_seconds: 30,
+    };
+    let (run_id, board) = drive_with(&harness, spec, passing).await;
+
+    let task = &board.tasks(&run_id).unwrap()[0];
+    assert_eq!(task.state, TaskState::Merged, "{}", task.note);
+}
+
+#[tokio::test]
+async fn build_mode_rejects_an_attempt_that_breaks_what_was_working() {
+    // The project's own check cannot say the task was done, but it can say the agent broke
+    // something that worked. That is the one thing it is allowed to condemn an attempt for.
+    let mut harness = harness().await;
+    harness.config.mode = "build".into();
+    harness.config.forum_observer = String::new();
+    // Passes until an agent creates BROKEN, which the fake agent does on this instruction.
+    harness.config.verify_command =
+        vec!["sh".into(), "-c".into(), "! test -f BROKEN".into()];
+
+    let mut only = task("breaks-it", "CREATE:BROKEN", &[]);
+    only.verify = None;
+    let spec = RunSpec {
+        objective: "Break the build".into(),
+        tasks: vec![only],
+    };
+    let (run_id, board) = drive(&harness, spec).await;
+
+    let task = &board.tasks(&run_id).unwrap()[0];
+    assert_eq!(task.state, TaskState::Failed, "{}", task.note);
+    assert!(
+        task.note.contains("was passing before this run"),
+        "says it was a regression, not a verdict on the task: {}",
+        task.note
+    );
+}
+
+#[tokio::test]
+async fn a_check_that_was_already_failing_does_not_condemn_anyone() {
+    // Pointing Firm at a project whose suite is already red must not reject every attempt
+    // in turn for a breakage that was there before any agent arrived.
+    let mut harness = harness().await;
+    harness.config.mode = "build".into();
+    harness.config.forum_observer = String::new();
+    harness.config.verify_command = vec!["false".into()];
+
+    let mut only = task("regardless", "CREATE:work.txt", &[]);
+    only.verify = None;
+    let spec = RunSpec {
+        objective: "Work on a project that is already broken".into(),
+        tasks: vec![only],
+    };
+    let already_red = Scorer::Command {
+        command: vec!["false".into()],
+        timeout_seconds: 30,
+    };
+    let (run_id, board) = drive_with(&harness, spec, already_red).await;
+
+    let task = &board.tasks(&run_id).unwrap()[0];
+    assert_eq!(task.state, TaskState::Merged, "{}", task.note);
+    let attempts = board.attempts(&run_id).unwrap();
+    assert!(
+        attempts[0]["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("already failing"),
+        "and says why it could not judge: {:?}",
+        attempts[0]["detail"]
+    );
+}
+
+#[tokio::test]
+async fn a_rejected_task_escalates_to_a_dearer_tier_rather_than_retrying_the_cheap_one() {
+    // Paying more only where cheap demonstrably failed is the whole cost argument. Trying
+    // the same cheap model twice spends two runs to learn one thing.
+    let mut harness = harness().await;
+    harness.config.mode = "build".into();
+    harness.config.forum_observer = String::new();
+    harness.config.verify_command = vec!["true".into()];
+    tiered(&mut harness);
+
+    // Fails the task's own check the first time; the second attempt is a different tier.
+    let script = harness.config.providers[0].command.clone();
+    std::fs::write(
+        &script,
+        "#!/bin/sh\ncat > /dev/null\ntest -f first-go && echo done > done.txt\ntouch first-go\nexit 0\n",
+    )
+    .unwrap();
+
+    let mut only = task("hard", "do the difficult thing", &[]);
+    only.provider = None; // let routing choose
+    only.verify = Some(vec!["sh".into(), "-c".into(), "test -f done.txt".into()]);
+    let spec = RunSpec {
+        objective: "Escalate when the cheap model fails".into(),
+        tasks: vec![only],
+    };
+    let passing = Scorer::Command {
+        command: vec!["true".into()],
+        timeout_seconds: 30,
+    };
+    let (run_id, board) = drive_with(&harness, spec, passing).await;
+
+    let attempts = board.attempts(&run_id).unwrap();
+    assert_eq!(attempts.len(), 2, "one cheap try, then one escalation");
+    assert_eq!(attempts[0]["provider"], "tier0", "cheapest first, as always");
+    assert_ne!(
+        attempts[1]["provider"], "tier0",
+        "the retry went up a tier rather than re-rolling the same model"
+    );
+}
+
+#[tokio::test]
+async fn build_outcomes_stay_out_of_the_trial_ledger() {
+    // The trial ledger is a benchmark. A build-mode merge means a reviewer was satisfied
+    // and nothing broke; letting that count as evidence would quietly soften the record.
+    let mut harness = harness().await;
+    harness.config.mode = "build".into();
+    harness.config.forum_observer = String::new();
+    harness.config.verify_command = vec!["true".into()];
+
+    let mut only = task("ordinary", "CREATE:thing.txt", &[]);
+    only.verify = None;
+    let spec = RunSpec {
+        objective: "Ordinary work".into(),
+        tasks: vec![only],
+    };
+    let passing = Scorer::Command {
+        command: vec!["true".into()],
+        timeout_seconds: 30,
+    };
+    let (_run_id, board) = drive_with(&harness, spec, passing).await;
+
+    let build = board.provider_stats(0, "build").unwrap();
+    let trial = board.provider_stats(0, "trial").unwrap();
+    assert_eq!(build.get("fake").map(|s| s.attempts), Some(1));
+    assert!(
+        trial.is_empty(),
+        "the benchmark never saw this run: {trial:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_operator_stop_never_becomes_evidence_about_a_provider() {
+    // Last night's ledger read grok at 33% when it had failed nothing: one verified
+    // attempt and two that were interrupted by Ctrl+C. The spec already said an attempt
+    // that never finished is not evidence; the query did not agree.
+    let harness = harness().await;
+    let mut board = Board::open(&harness.board_path).unwrap();
+    let spec = RunSpec {
+        objective: "Evidence".into(),
+        tasks: vec![task("one", "CREATE:one.txt", &[])],
+    };
+    board
+        .create_run("run-evidence", &spec, "abc", "firm/run-evidence", "trial")
+        .unwrap();
+
+    for (id, state) in [
+        ("a", AttemptState::Verified),
+        ("b", AttemptState::Interrupted),
+        ("c", AttemptState::Interrupted),
+    ] {
+        let mut attempt = Attempt::reserved(
+            id.into(),
+            "run-evidence",
+            "one",
+            "fake",
+            format!("firm/attempt-{id}"),
+            "abc".into(),
+        );
+        board.start_attempt(&attempt).unwrap();
+        attempt.state = state;
+        attempt.finished_at = Some(attempt.started_at + 10);
+        board.finish_attempt(&attempt).unwrap();
+    }
+
+    let stats = board.provider_stats(0, "trial").unwrap();
+    let record = stats.get("fake").expect("the provider has a record");
+    assert_eq!(record.attempts, 1, "only the judged attempt counts");
+    assert_eq!(record.success_percent(), 100, "it passed the one it was judged on");
 }

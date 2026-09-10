@@ -54,6 +54,27 @@ pub enum Progress {
     },
 }
 
+/// Does the project's own check pass before any agent has touched it?
+///
+/// Only asked in build mode, where that check is a regression guard rather than proof a
+/// task was done. Knowing the answer is what separates "this attempt broke the build" from
+/// "the build was already broken", and only the first is the attempt's fault.
+async fn baseline_of(
+    config: &Config,
+    scorer: &Scorer,
+    path: &Path,
+    cancel: &watch::Receiver<u64>,
+) -> bool {
+    if config.mode != "build" || config.verify_command.is_empty() {
+        return false;
+    }
+    scorer
+        .score(path, cancel.clone())
+        .await
+        .map(|verdict| verdict.passed)
+        .unwrap_or(false)
+}
+
 pub struct Engine {
     config: Config,
     board: Arc<Mutex<Board>>,
@@ -67,6 +88,10 @@ pub struct Engine {
     provider_slots: BTreeMap<String, Arc<Semaphore>>,
     /// Forces every unpinned task to one provider, for a deliberate comparison.
     force_provider: Option<String>,
+    /// Build mode only: was the project's own check passing before any agent touched it?
+    /// A guard that was already failing guards nothing, and holding agents responsible for
+    /// a suite that was broken when they arrived would reject every attempt in turn.
+    baseline_passed: bool,
 }
 
 #[derive(Debug, Default, serde::Serialize)]
@@ -101,7 +126,7 @@ impl Engine {
         let mut board = board;
         // The board validates the graph. An authoring error must not leave a worktree
         // behind, so the integration worktree is removed before the error propagates.
-        match board.create_run(&run_id, spec, &base_commit, trees.integration_branch()) {
+        match board.create_run(&run_id, spec, &base_commit, trees.integration_branch(), &config.mode) {
             Ok(()) => {}
             Err(error) => {
                 let _ = super::worktree::git(
@@ -122,6 +147,7 @@ impl Engine {
             .iter()
             .map(|p| (p.id.clone(), Arc::new(Semaphore::new(p.max_concurrent))))
             .collect();
+        let baseline = baseline_of(&config, &scorer, trees.integration_path(), &cancel).await;
         Ok((
             Self {
                 config,
@@ -134,6 +160,7 @@ impl Engine {
                 provider_slots,
                 progress: None,
                 force_provider: None,
+                baseline_passed: baseline,
             },
             run_id,
         ))
@@ -150,6 +177,11 @@ impl Engine {
     ) -> Result<Self> {
         let mut board = board;
         let run = board.run(run_id)?;
+        // The run's own regime wins over the flag it was resumed with. Half a run judged
+        // one way and half the other would be neither, and its ledger entries would mean
+        // two different things under one heading.
+        let mut config = config;
+        config.mode = run.mode.clone();
         // Anything left mid-flight when the controller stopped has no agent behind it now.
         board.reconcile(run_id)?;
         let trees = Worktrees::attach(
@@ -164,6 +196,7 @@ impl Engine {
             .iter()
             .map(|p| (p.id.clone(), Arc::new(Semaphore::new(p.max_concurrent))))
             .collect();
+        let baseline = baseline_of(&config, &scorer, trees.integration_path(), &cancel).await;
         Ok(Self {
             config,
             board: Arc::new(Mutex::new(board)),
@@ -175,6 +208,7 @@ impl Engine {
             provider_slots,
             progress: None,
             force_provider: None,
+            baseline_passed: baseline,
         })
     }
 
@@ -223,7 +257,7 @@ impl Engine {
     /// than ranked last on no evidence.
     ///
     /// Overrides beat all of it: a task pinned to a provider, or `--provider` on the run.
-    async fn candidates(&self, pinned: Option<&str>) -> Result<Vec<Provider>> {
+    async fn candidates(&self, pinned: Option<&str>, judged: &[String]) -> Result<Vec<Provider>> {
         if let Some(id) = pinned.or(self.force_provider.as_deref()) {
             let provider = self.provider(id)?;
             ensure!(provider.enabled, "Provider {id} is disabled");
@@ -241,10 +275,38 @@ impl Engine {
 
         let stats = if self.config.routing == "evidence" {
             let since = now().saturating_sub(EVIDENCE_WINDOW_SECONDS);
-            self.board.lock().await.provider_stats(since).unwrap_or_default()
+            self.board
+                .lock()
+                .await
+                .provider_stats(since, &self.config.mode)
+                .unwrap_or_default()
         } else {
             BTreeMap::new()
         };
+
+        // Build mode escalates rather than re-rolling: a task that a cheap model has
+        // already failed goes up a tier, so the expensive model is paid for only where the
+        // cheap one demonstrably could not cope. Trial mode is left alone — changing how it
+        // routes would change what the benchmark measures.
+        if self.config.mode == "build" && !judged.is_empty() {
+            let floor = providers
+                .iter()
+                .filter(|p| judged.contains(&p.id))
+                .map(|p| p.tier)
+                .max();
+            if let Some(floor) = floor {
+                let higher: Vec<Provider> =
+                    providers.iter().filter(|p| p.tier > floor).cloned().collect();
+                // Nothing dearer to escalate to: at least try someone who has not failed
+                // this task already, and if even that is empty, keep the full list rather
+                // than stranding the task.
+                if !higher.is_empty() {
+                    providers = higher;
+                } else if providers.iter().any(|p| !judged.contains(&p.id)) {
+                    providers.retain(|p| !judged.contains(&p.id));
+                }
+            }
+        }
 
         providers.sort_by_key(|p| {
             let free = self
@@ -322,7 +384,13 @@ impl Engine {
                 let Ok(global) = self.inflight.clone().try_acquire_owned() else {
                     break;
                 };
-                let candidates = match self.candidates(task.provider.as_deref()).await {
+                let judged = self
+                    .board
+                    .lock()
+                    .await
+                    .judged_providers(run_id, &task.id)
+                    .unwrap_or_default();
+                let candidates = match self.candidates(task.provider.as_deref(), &judged).await {
                     Ok(candidates) => candidates,
                     Err(error) => {
                         let mut board = self.board.lock().await;
@@ -780,12 +848,49 @@ impl Engine {
 
         // A task-scoped check where one is given, so focused work is not judged by
         // failures belonging to tasks that have not been done yet.
-        let verdict = scorer.score(&workspace.path, self.cancel.clone()).await?;
+        //
+        // In build mode a task usually has no check of its own, and the project's suite
+        // cannot prove the task was done — only that nothing broke. So it is read as a
+        // regression guard: it condemns an attempt only if it was passing beforehand. If it
+        // was already failing when the run started, it has nothing to say about anyone.
+        let scoped = task.verify.as_ref().is_some_and(|v| !v.is_empty());
+        let guard_only = self.config.mode == "build" && !scoped;
+        let verdict = if guard_only && !self.baseline_passed {
+            super::scorer::Verdict {
+                passed: true,
+                score: None,
+                detail: "No regression guard: the project's own check was already failing \
+                         before this run, so it cannot judge this attempt"
+                    .into(),
+            }
+        } else {
+            scorer.score(&workspace.path, self.cancel.clone()).await?
+        };
         record.passed = Some(verdict.passed);
         record.score = verdict.score;
         record.detail = verdict.detail.clone();
         if !verdict.passed {
             record.state = AttemptState::Rejected;
+            if guard_only {
+                record.detail = format!(
+                    "Broke the project's own check, which was passing before this run.\n{}",
+                    verdict.detail
+                );
+            }
+            return Ok(());
+        }
+
+        // Nothing broke — which a stub also achieves. In build mode something has to ask
+        // whether the work was actually done, so a roster model reads the diff against the
+        // task. It is judgement rather than proof, which is why build outcomes are kept out
+        // of the trial ledger.
+        if self.config.mode == "build"
+            && let Some(review) = self.review(task, &provider, workspace, record).await
+            && !review.passed
+        {
+            record.state = AttemptState::Rejected;
+            record.passed = Some(false);
+            record.detail = format!("Review rejected it: {}", review.reason);
             return Ok(());
         }
 
@@ -824,10 +929,19 @@ impl Engine {
             return Ok(());
         }
         // Re-run the same check on the merged tree: passing alone does not prove the work
-        // still holds once combined with everything else already merged.
-        let integrated = scorer
-            .score(self.trees.integration_path(), self.cancel.clone())
-            .await?;
+        // still holds once combined with everything else already merged. A check that could
+        // not judge the attempt cannot judge the integration either.
+        let integrated = if guard_only && !self.baseline_passed {
+            super::scorer::Verdict {
+                passed: true,
+                score: None,
+                detail: String::new(),
+            }
+        } else {
+            scorer
+                .score(self.trees.integration_path(), self.cancel.clone())
+                .await?
+        };
         if !integrated.passed {
             self.trees.revert_last_merge().await?;
             record.state = AttemptState::Rejected;
@@ -898,6 +1012,58 @@ impl Engine {
     /// Ask the observer to read a finished attempt's event stream and write up anything
     /// the group should know — chiefly what was tried and abandoned, which is exactly what
     /// a diff cannot show and what an agent will not volunteer.
+    /// Ask a roster model whether an attempt's diff actually does its task.
+    ///
+    /// Never the provider that wrote it: an agent marking its own homework is the thing
+    /// this exists to replace. Returns `None` for no opinion — no eligible reviewer, no
+    /// budget, an unreadable reply — because a reviewer that cannot answer must not become
+    /// a rejection. Silence lets the work through; only a clear "fail" stops it.
+    async fn review(
+        &self,
+        task: &super::board::Task,
+        author: &Provider,
+        workspace: &super::worktree::Attempt,
+        record: &Attempt,
+    ) -> Option<super::review::Review> {
+        let reviewer = self.reviewer_for(&author.id).await?;
+        let diff = workspace.diff(24 * 1024).await.ok()?;
+        if diff.trim().is_empty() {
+            return None;
+        }
+        let prompt = super::review::prompt(
+            &task.title,
+            &task.brief,
+            &task.acceptance,
+            &record.files_changed,
+            &diff,
+        );
+        super::review::ask(&self.config, &reviewer, prompt, self.cancel.clone())
+            .await
+            .unwrap_or_default()
+    }
+
+    /// The cheapest eligible model that did not write the work. A pinned `reviewer` wins,
+    /// unless it happens to be the author, in which case anyone else is better.
+    async fn reviewer_for(&self, author: &str) -> Option<Provider> {
+        let eligible: Vec<&Provider> = self
+            .config
+            .providers
+            .iter()
+            .filter(|p| p.enabled && p.id != author)
+            .collect();
+        let pinned = self.config.reviewer.trim();
+        let chosen = eligible
+            .iter()
+            .find(|p| !pinned.is_empty() && p.id == pinned)
+            .or_else(|| eligible.iter().min_by_key(|p| (p.tier, p.id.clone())))
+            .map(|p| (*p).clone())?;
+        // Reviewing is worth doing but never worth blocking work for, as with observation.
+        match self.budget_gate(&chosen).await {
+            Ok(None) => Some(chosen),
+            _ => None,
+        }
+    }
+
     async fn observe(&self, run_id: &str, task: &super::board::Task, record: &Attempt) -> Result<()> {
         let Some(observer) = self
             .config

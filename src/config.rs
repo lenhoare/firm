@@ -48,6 +48,17 @@ pub struct Config {
     /// poisons every prompt.
     #[serde(default = "default_forum_bytes")]
     pub forum_bytes: usize,
+    /// How work is judged. `trial` is the benchmark regime: every task carries a check
+    /// that fails before the work and passes after, so a merge is proof. `build` is for
+    /// ordinary projects, where no such check exists — the project's own tests become a
+    /// regression guard and a roster model reviews the diff. Outcomes from the two are
+    /// kept apart, because only one of them is evidence.
+    #[serde(default = "default_mode")]
+    pub mode: String,
+    /// Provider that reviews diffs in build mode. Empty picks the cheapest eligible one
+    /// that did not write the work. Never the author, whatever this says.
+    #[serde(default)]
+    pub reviewer: String,
 }
 
 /// Provider that turns a written brief into a task graph. One call per run, not one per
@@ -62,6 +73,12 @@ fn default_observer() -> String {
 
 fn default_forum_bytes() -> usize {
     8 * 1024
+}
+
+/// Trial unless asked otherwise: the stricter regime should never be opted into by
+/// accident, and a benchmark that quietly admits unjudged work is not a benchmark.
+fn default_mode() -> String {
+    "trial".into()
 }
 
 fn meeting_order() -> Vec<String> {
@@ -186,6 +203,11 @@ pub struct Provider {
     /// tools and never reply. Falls back to `manager_args` when unset.
     #[serde(default)]
     pub observer_args: Option<Vec<String>>,
+    /// Invocation for reviewing another agent's diff in build mode. Like the observer it
+    /// answers from its prompt alone — the diff is given to it, so it needs no tools.
+    /// Falls back to `observer_args`, then `manager_args`.
+    #[serde(default)]
+    pub reviewer_args: Option<Vec<String>>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq)]
@@ -227,6 +249,7 @@ fn legacy_providers() -> Vec<Provider> {
         meeting_args: None,
         manager_args: None,
         observer_args: None,
+        reviewer_args: None,
         planner_args: None,
         resume_args: None,
         worker_timeout_seconds: None,

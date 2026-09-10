@@ -106,6 +106,23 @@ fn prompt(config: &Config, brief: &str, notes: &str) -> String {
         .filter(|p| p.enabled)
         .map(|p| p.id.as_str())
         .collect();
+    // What a check can mean depends on the regime. In trial mode it is proof; in build
+    // mode most tasks have none, and demanding one produces invented checks that pass
+    // vacuously — worse than none, because they look like evidence.
+    let verify_rule = if config.mode == "build" {
+        "- A `verify` command is optional here, and worth giving only where a real one \
+           exists: a check that genuinely fails now and passes once the task is done. Do \
+           not invent one to fill the field. Where there is none, the project's own tests \
+           act as a guard against breakage and a reviewer reads the diff, so what matters \
+           is that `acceptance` states plainly what done looks like — specific enough that \
+           someone reading the diff could tell whether it was achieved.\n"
+    } else {
+        "- Each task needs a `verify` command: the exact argv the controller will run to \
+           decide whether that task's work is acceptable. It must be scoped to that task, \
+           because while other tasks are unfinished a whole-project check necessarily \
+           fails. It must fail now and pass once the task is done — a check that already \
+           passes proves nothing.\n"
+    };
     format!(
         "You are planning work for a team of coding agents that run **in parallel**, each \
          in its own isolated git worktree, on the project at {workspace}. Read the \
@@ -116,11 +133,7 @@ fn prompt(config: &Config, brief: &str, notes: &str) -> String {
            work is merged, so two tasks editing the same file will conflict.\n\
          - Add a dependency only where one task genuinely needs another's merged result. \
            Every unnecessary dependency removes parallelism.\n\
-         - Each task needs a `verify` command: the exact argv the controller will run to \
-           decide whether that task's work is acceptable. It must be scoped to that task, \
-           because while other tasks are unfinished a whole-project check necessarily \
-           fails. It must fail now and pass once the task is done — a check that already \
-           passes proves nothing.\n\
+         {verify_rule}\
          - `verify` is an argv array, executed directly with no shell: \
            [\"cargo\", \"test\", \"--offline\", \"--test\", \"parser\"], never a single string.\n\
          - `files` is required on every task: exactly the files it may modify. Anything else it changes \
@@ -146,6 +159,7 @@ fn prompt(config: &Config, brief: &str, notes: &str) -> String {
          --- brief ---\n{brief}\n--- end brief ---{notes}",
         workspace = config.workspace.display(),
         providers = providers,
+        verify_rule = verify_rule,
     )
 }
 

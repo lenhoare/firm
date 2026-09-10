@@ -320,6 +320,25 @@ impl Attempt {
         Ok(true)
     }
 
+    /// The whole change this attempt made, for a reviewer to read. Bounded: a reviewer
+    /// prompt is a model call, and an unbounded diff is an unbounded bill.
+    pub async fn diff(&self, limit: usize) -> Result<String> {
+        let text = git(
+            &self.path,
+            &["diff", "--unified=3", &self.base_commit, "HEAD"],
+        )
+        .await
+        .unwrap_or_default();
+        if text.len() <= limit {
+            return Ok(text);
+        }
+        let mut end = limit;
+        while end > 0 && !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        Ok(format!("{}\n[diff truncated]", &text[..end]))
+    }
+
     pub async fn files_changed(&self) -> Result<Vec<String>> {
         let diff = git(
             &self.path,

@@ -18,13 +18,14 @@ async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() || args.iter().any(|a| a == "--help" || a == "-h") {
         println!(
-            "Firm 0.1 — experimental agent team\n\n  firm serve [--live] [--config PATH]\n  firm probe [--config PATH]\n  firm usage                                 (what has been spent, and current allowances)\n  firm usage --provider ID (--percent N | --tokens N) [--label TEXT] [--run ID]\n  firm plan --brief BRIEF.md [--out tasks.json] [--config PATH]\n  firm board --tasks PATH [--live] [--config PATH]\n  firm board --resume RUN|latest             (continue a run that was stopped)\n  firm board [--watch | --forum | --retire ID | --prune | --stats] [--config PATH]\n  firm board --tasks PATH --provider ID   (force one provider, for comparisons)\n\nBoard runs the v1 engine: several agents work in parallel on a task graph, each in its\nown git worktree; only work passing verify_command is merged. The workspace must be a\nclean git repository and your own branch is never modified.\n\nDefault: demo mode, localhost:7433, firm.toml.\nProbe reads Codex login type and rate limits; it never starts a model turn.\nLive mode uses your existing Codex subscription and configured worker CLI logins.\nStart app-server separately: codex app-server --listen ws://127.0.0.1:4500"
+            "Firm 0.1 — experimental agent team\n\n  firm serve [--live] [--config PATH]\n  firm probe [--config PATH]\n  firm usage                                 (what has been spent, and current allowances)\n  firm usage --provider ID (--percent N | --tokens N) [--label TEXT] [--run ID]\n  firm plan --brief BRIEF.md [--out tasks.json] [--build] [--config PATH]\n  firm board --tasks PATH [--live] [--build] [--config PATH]\n  firm board --resume RUN|latest             (continue a run that was stopped)\n  firm board [--watch | --forum | --retire ID | --prune | --stats] [--config PATH]\n  firm board --tasks PATH --provider ID   (force one provider, for comparisons)\n\nBoard runs the v1 engine: several agents work in parallel on a task graph, each in its\nown git worktree; only work passing verify_command is merged. The workspace must be a\nclean git repository and your own branch is never modified.\n\n--build is for ordinary projects, where no check can prove a task was done: the project's\nown tests become a regression guard, a roster model reviews each diff, and a rejected\ntask escalates to a dearer tier instead of retrying the same one. Its record is kept\napart from trial mode's, because only one of them is proof.\n\nDefault: demo mode, localhost:7433, firm.toml.\nProbe reads Codex login type and rate limits; it never starts a model turn.\nLive mode uses your existing Codex subscription and configured worker CLI logins.\nStart app-server separately: codex app-server --listen ws://127.0.0.1:4500"
         );
         return Ok(());
     }
     let mut config_path = "firm.toml";
     let mut tasks_path: Option<&str> = None;
     let mut live = false;
+    let mut build = false;
     let mut watch = false;
     let mut forum = false;
     let mut retire: Option<&str> = None;
@@ -42,6 +43,7 @@ async fn main() -> Result<()> {
     while index < args.len() {
         match args[index].as_str() {
             "--live" => live = true,
+            "--build" => build = true,
             "--config" => {
                 index += 1;
                 config_path = args.get(index).context("Missing config path")?;
@@ -94,7 +96,12 @@ async fn main() -> Result<()> {
         }
         index += 1;
     }
-    let config = Config::read(Path::new(config_path))?;
+    let mut config = Config::read(Path::new(config_path))?;
+    // Build mode is for ordinary projects, where no check can prove a task was done. It
+    // changes what a merge means, so it is never inferred — only asked for.
+    if build {
+        config.mode = "build".into();
+    }
     if args[0] == "usage" {
         return usage_command(config, live, provider, percent, tokens, label, run).await;
     }
@@ -282,9 +289,14 @@ async fn board(config: Config, options: BoardOptions<'_>) -> Result<()> {
         // something the system does silently.
         let board = v1::board::Board::open_readonly(&board_path)?;
         let since = v1::dispatch::evidence_since();
-        let stats = board.provider_stats(since)?;
-        println!("Provider record over the last {} days, as routing sees it:\n",
-            v1::dispatch::EVIDENCE_WINDOW_SECONDS / 86400);
+        // Records are kept per regime, so say which one is being shown. A build-mode
+        // merge means a reviewer was satisfied; a trial-mode merge means a check proved it.
+        let stats = board.provider_stats(since, &config.mode)?;
+        println!(
+            "Provider record in {} mode over the last {} days, as routing sees it:\n",
+            config.mode,
+            v1::dispatch::EVIDENCE_WINDOW_SECONDS / 86400
+        );
         if stats.is_empty() {
             println!("  No attempts yet; routing falls back to cost alone.");
         }

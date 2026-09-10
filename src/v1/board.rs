@@ -197,6 +197,9 @@ pub struct Run {
     pub integration_branch: String,
     pub created_at: u64,
     pub finished_at: Option<u64>,
+    /// Which evaluation regime made this run: `trial` or `build`. A resumed run keeps it,
+    /// so evidence cannot change regime halfway through.
+    pub mode: String,
 }
 
 /// How many tasks a run may hold. A proposal is a spend primitive: an agent that can add
@@ -296,6 +299,8 @@ impl Board {
         // `CREATE TABLE IF NOT EXISTS` never alters an existing table, so columns added
         // after a board was created must be migrated in explicitly.
         add_column(&conn, "attempts", "activity", "TEXT NOT NULL DEFAULT ''")?;
+        // Runs made before build mode existed were all trials, which is the right default.
+        add_column(&conn, "runs", "mode", "TEXT NOT NULL DEFAULT 'trial'")?;
         add_column(&conn, "attempts", "observation", "TEXT NOT NULL DEFAULT ''")?;
         add_column(&conn, "tasks", "files", "TEXT NOT NULL DEFAULT '[]'")?;
         add_column(&conn, "tasks", "must_fail", "TEXT")?;
@@ -312,6 +317,13 @@ impl Board {
     /// Read-only handle for watching a run another process owns. Takes no lock and
     /// creates nothing, so it cannot disturb a run in flight.
     pub fn open_readonly(path: &Path) -> Result<Self> {
+        // A read-only connection cannot run the column migrations, so a board written
+        // before a column existed would fail every query that mentions it. Open it
+        // read-write once to bring the schema up to date, and carry on read-only if that
+        // is not possible — a locked board is being written by a run, so it is current.
+        if path.exists() {
+            let _ = Self::open(path);
+        }
         let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
             .with_context(|| format!("No board at {}", path.display()))?;
         Ok(Self { conn })
@@ -341,13 +353,14 @@ impl Board {
         spec: &RunSpec,
         base_commit: &str,
         integration_branch: &str,
+        mode: &str,
     ) -> Result<()> {
         validate_graph(spec)?;
 
         let transaction = self.conn.transaction()?;
         transaction.execute(
-            "INSERT INTO runs(id,objective,base_commit,integration_branch,created_at) VALUES(?1,?2,?3,?4,?5)",
-            params![id, spec.objective, base_commit, integration_branch, now()],
+            "INSERT INTO runs(id,objective,base_commit,integration_branch,created_at,mode) VALUES(?1,?2,?3,?4,?5,?6)",
+            params![id, spec.objective, base_commit, integration_branch, now(), mode],
         )?;
         for task in &spec.tasks {
             transaction.execute(
@@ -375,7 +388,7 @@ impl Board {
     pub fn run(&self, run_id: &str) -> Result<Run> {
         self.conn
             .query_row(
-                "SELECT id,objective,base_commit,integration_branch,created_at,finished_at FROM runs WHERE id=?1",
+                "SELECT id,objective,base_commit,integration_branch,created_at,finished_at,mode FROM runs WHERE id=?1",
                 [run_id],
                 |r| {
                     Ok(Run {
@@ -385,6 +398,7 @@ impl Board {
                         integration_branch: r.get(3)?,
                         created_at: r.get(4)?,
                         finished_at: r.get(5)?,
+                        mode: r.get(6)?,
                     })
                 },
             )
@@ -605,6 +619,17 @@ impl Board {
             "SELECT worktree FROM attempts WHERE run_id=?1 AND state='interrupted' AND worktree!=''",
         )?;
         let rows = statement.query_map(params![run_id], |r| r.get::<_, String>(0))?;
+        Ok(rows.flatten().collect())
+    }
+
+    /// Providers that have already been judged on this task, so a retry can be sent
+    /// somewhere else. An interrupted attempt is not a judgement and does not count.
+    pub fn judged_providers(&self, run_id: &str, task_id: &str) -> Result<Vec<String>> {
+        let mut statement = self.conn.prepare(
+            "SELECT DISTINCT provider FROM attempts
+             WHERE run_id=?1 AND task_id=?2 AND state IN ('verified','rejected','error')",
+        )?;
+        let rows = statement.query_map(params![run_id, task_id], |r| r.get::<_, String>(0))?;
         Ok(rows.flatten().collect())
     }
 
@@ -833,11 +858,23 @@ impl Board {
     /// What each provider has actually done, from the attempts ledger. This is the
     /// evidence routing uses: real outcomes and real durations, rather than a model's
     /// opinion of its own capability.
-    pub fn provider_stats(&self, since: u64) -> Result<BTreeMap<String, Stats>> {
+    /// What each provider's record looks like, within one evaluation regime. A merge in
+    /// build mode means "nothing broke and a reviewer was satisfied"; in trial mode it
+    /// means a check that could not have passed before now passes. Pooling the two would
+    /// let the softer signal quietly outvote the harder one.
+    pub fn provider_stats(&self, since: u64, mode: &str) -> Result<BTreeMap<String, Stats>> {
         let mut query = self.conn.prepare(
-            "SELECT provider,state,started_at,finished_at FROM attempts WHERE started_at>=?1",
+            // Left join: an attempt whose run row is missing is old evidence from before
+            // modes existed, and all of that was trial work.
+            // Interrupted attempts are excluded outright. Nobody judged them, so counting
+            // them as attempts a provider failed to get verified turns the operator's
+            // Ctrl+C into evidence about a model.
+            "SELECT a.provider,a.state,a.started_at,a.finished_at FROM attempts a
+             LEFT JOIN runs r ON r.id=a.run_id
+             WHERE a.started_at>=?1 AND COALESCE(r.mode,'trial')=?2
+               AND a.state NOT IN ('interrupted','running')",
         )?;
-        let rows = query.query_map([since], |r| {
+        let rows = query.query_map(params![since, mode], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
@@ -1141,26 +1178,26 @@ mod tests {
         let (_dir, mut board) = board();
         assert!(
             board
-                .create_run("run-1", &spec(vec![task("a", &["missing"])]), "abc", "firm/run")
+                .create_run("run-1", &spec(vec![task("a", &["missing"])]), "abc", "firm/run", "trial")
                 .unwrap_err()
                 .to_string()
                 .contains("unknown task")
         );
         assert!(
             board
-                .create_run("run-1", &spec(vec![task("a", &["b"]), task("b", &["a"])]), "abc", "firm/run")
+                .create_run("run-1", &spec(vec![task("a", &["b"]), task("b", &["a"])]), "abc", "firm/run", "trial")
                 .unwrap_err()
                 .to_string()
                 .contains("cycle")
         );
         assert!(
             board
-                .create_run("run-1", &spec(vec![task("a", &[]), task("a", &[])]), "abc", "firm/run")
+                .create_run("run-1", &spec(vec![task("a", &[]), task("a", &[])]), "abc", "firm/run", "trial")
                 .unwrap_err()
                 .to_string()
                 .contains("Duplicate")
         );
-        assert!(board.create_run("run-1", &spec(vec![]), "abc", "firm/run").is_err());
+        assert!(board.create_run("run-1", &spec(vec![]), "abc", "firm/run", "trial").is_err());
         assert_eq!(board.latest_run().unwrap(), None);
     }
 
@@ -1174,6 +1211,7 @@ mod tests {
                 &spec(vec![task("a", &[]), task("b", &["a"]), task("c", &["b"])]),
                 "abc",
                 "firm/run",
+                "trial",
             )
             .unwrap();
         let ready: Vec<String> = board.ready(run).unwrap().into_iter().map(|t| t.id).collect();
@@ -1205,7 +1243,7 @@ mod tests {
     fn a_proposal_can_extend_the_graph_and_the_dispatcher_sees_it() {
         let (_dir, mut board) = board();
         let run = "run-1";
-        board.create_run(run, &spec(vec![task("a", &[])]), "abc", "firm/run").unwrap();
+        board.create_run(run, &spec(vec![task("a", &[])]), "abc", "firm/run", "trial").unwrap();
 
         // Work the plan did not anticipate, discovered while running.
         let outcome = board
@@ -1226,7 +1264,7 @@ mod tests {
         let (_dir, mut board) = board();
         let run = "run-1";
         board
-            .create_run(run, &spec(vec![task("a", &[]), task("b", &["a"])]), "abc", "firm/run")
+            .create_run(run, &spec(vec![task("a", &[]), task("b", &["a"])]), "abc", "firm/run", "trial")
             .unwrap();
         let refuse = |board: &mut Board, m: Mutation| board.propose(run, "grok", &m).unwrap().unwrap_err();
 
@@ -1255,7 +1293,7 @@ mod tests {
         // A proposal commits budget, so an agent that keeps adding work must hit a wall.
         let (_dir, mut board) = board();
         let run = "run-1";
-        board.create_run(run, &spec(vec![task("seed", &[])]), "abc", "firm/run").unwrap();
+        board.create_run(run, &spec(vec![task("seed", &[])]), "abc", "firm/run", "trial").unwrap();
         let mut accepted = 1;
         for index in 0..MAX_TASKS_PER_RUN + 5 {
             let proposal = Mutation::Add { task: added(&format!("t{index}"), &[]) };
@@ -1277,6 +1315,7 @@ mod tests {
                 &spec(vec![task("a", &[]), task("b", &[]), task("c", &["a", "b"])]),
                 "abc",
                 "firm/run",
+                "trial",
             )
             .unwrap();
         assert_eq!(board.ready(run).unwrap().len(), 2, "partition mode runs a and b in parallel");

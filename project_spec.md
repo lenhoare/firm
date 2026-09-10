@@ -528,3 +528,48 @@ Recorded here because each contradicted an assumption in this document:
 
 Multiple machines; containerised isolation; sophisticated budget prediction; automatic
 forum summarisation by a premium model; mobile and VR surfaces.
+
+## Two regimes: trial and build
+
+Everything above assumes a check that proves the work: one that fails before the task and
+passes after, so a merge is evidence and the ledger is a benchmark. That regime — `trial`,
+the default — is what the handwriting trial was for, and it is the only one whose record
+should be believed.
+
+Most real projects cannot supply it. A brief like "add pagination to the admin list" has no
+check that fails now and passes later without someone first writing one, and the project's
+own suite says only that nothing broke — which a stub achieves as easily as an
+implementation. Demanding a check anyway produces invented ones that pass vacuously, which
+is worse than none, because they look like evidence.
+
+`--build` is that second regime, and it changes three things.
+
+**The check becomes a guard.** The project's own suite is run once before any agent starts.
+An attempt is condemned only if it *regressed* that baseline — something that was passing
+now fails. If the suite was already red when the run began, it judges nobody, and says so
+rather than pretending. A task that does carry its own real check is still judged by it;
+the guard is for the rest.
+
+**A reviewer decides whether the work was done.** Nothing broke is a low bar, so a roster
+model reads the diff against the task and its acceptance criteria, and can reject a stub, a
+constant returned to satisfy a caller, a deleted test, or work that addresses something
+else. Never the model that wrote it. It is given the diff rather than tools, because an
+observer with tools spends its turns exploring and never answers — learned the expensive
+way. A reviewer that cannot be reached or understood has *no opinion*: silence lets work
+through, and only a clear rejection stops it, because a broken reviewer must not become a
+verdict.
+
+**A rejection escalates instead of repeating.** Trial mode retries within the same
+cheapest-first ordering. Build mode sends the retry up a tier, so the dear model is paid for
+only where the cheap one demonstrably could not cope — which is the whole cost argument for
+a roster, applied per task rather than per run.
+
+The two records are kept apart. A build merge means "a reviewer was satisfied and nothing
+broke"; a trial merge means "a check that could not have passed before now passes". Pooling
+them would let the softer signal outvote the harder one, so `provider_stats` is scoped to a
+regime and a resumed run keeps the regime it was made in.
+
+Related: an attempt nobody judged is not evidence either. Interrupted and running attempts
+are excluded from the record outright — otherwise stopping a run drags down the success rate
+of whichever provider happened to be working at the time, which is exactly what the first
+build-mode ledger showed.
